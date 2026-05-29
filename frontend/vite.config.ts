@@ -39,6 +39,13 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const backendUrl = env.VITE_DEV_PROXY_TARGET || 'http://localhost:8080'
   const devPort = Number(env.VITE_DEV_PORT || 3000)
+  const allowedHosts = Array.from(new Set([
+    'www.heguo.xyz',
+    ...(env.VITE_DEV_ALLOWED_HOSTS || '')
+      .split(',')
+      .map(host => host.trim())
+      .filter(Boolean)
+  ]))
 
   return {
     plugins: [
@@ -109,12 +116,45 @@ export default defineConfig(({ mode }) => {
     server: {
       host: '0.0.0.0',
       port: devPort,
+      allowedHosts,
       proxy: {
         '/api': {
           target: backendUrl,
           changeOrigin: true
         },
         '/v1': {
+          target: backendUrl,
+          changeOrigin: true
+        },
+        '/v1beta': {
+          target: backendUrl,
+          changeOrigin: true
+        },
+        '/responses': {
+          target: backendUrl,
+          changeOrigin: true
+        },
+        '/chat': {
+          target: backendUrl,
+          changeOrigin: true
+        },
+        '/embeddings': {
+          target: backendUrl,
+          changeOrigin: true
+        },
+        '/images': {
+          target: backendUrl,
+          changeOrigin: true
+        },
+        '/backend-api': {
+          target: backendUrl,
+          changeOrigin: true
+        },
+        '/antigravity': {
+          target: backendUrl,
+          changeOrigin: true
+        },
+        '/health': {
           target: backendUrl,
           changeOrigin: true
         },
