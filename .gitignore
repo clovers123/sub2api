@@ -113,6 +113,7 @@ backend/data/
 /config/
 backend/config.yaml
 deploy/config.yaml
+tools/proxy-cores.windows.json
 backend/.installed
 
 # ===================
