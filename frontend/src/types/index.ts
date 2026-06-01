@@ -1093,6 +1093,7 @@ export interface AdminDataPayload {
   version?: number
   exported_at: string
   proxies: AdminDataProxy[]
+  groups: AdminDataGroup[]
   accounts: AdminDataAccount[]
 }
 
@@ -1107,6 +1108,16 @@ export interface AdminDataProxy {
   status: 'active' | 'inactive'
 }
 
+export interface AdminDataGroup {
+  name: string
+  description?: string
+  platform: AccountPlatform
+  rate_multiplier: number
+  is_exclusive: boolean
+  status: 'active' | 'inactive'
+  subscription_type?: string
+}
+
 export interface AdminDataAccount {
   name: string
   notes?: string | null
@@ -1115,6 +1126,7 @@ export interface AdminDataAccount {
   credentials: Record<string, unknown>
   extra?: Record<string, unknown>
   proxy_key?: string | null
+  group_names?: string[]
   concurrency: number
   priority: number
   rate_multiplier?: number | null
@@ -1123,7 +1135,7 @@ export interface AdminDataAccount {
 }
 
 export interface AdminDataImportError {
-  kind: 'proxy' | 'account'
+  kind: 'proxy' | 'group' | 'account'
   name?: string
   proxy_key?: string
   message: string
@@ -1133,7 +1145,11 @@ export interface AdminDataImportResult {
   proxy_created: number
   proxy_reused: number
   proxy_failed: number
+  group_created: number
+  group_reused: number
+  group_failed: number
   account_created: number
+  account_updated: number
   account_failed: number
   errors?: AdminDataImportError[]
 }

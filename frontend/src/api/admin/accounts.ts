@@ -557,6 +557,7 @@ export async function exportData(options?: {
     sort_order?: 'asc' | 'desc'
   }
   includeProxies?: boolean
+  includeGroups?: boolean
 }): Promise<AdminDataPayload> {
   const params: Record<string, string> = {}
   if (options?.ids && options.ids.length > 0) {
@@ -575,6 +576,9 @@ export async function exportData(options?: {
   if (options?.includeProxies === false) {
     params.include_proxies = 'false'
   }
+  if (options?.includeGroups === false) {
+    params.include_groups = 'false'
+  }
   const { data } = await apiClient.get<AdminDataPayload>('/admin/accounts/data', { params })
   return data
 }
@@ -582,10 +586,12 @@ export async function exportData(options?: {
 export async function importData(payload: {
   data: AdminDataPayload
   skip_default_group_bind?: boolean
+  overwrite_existing?: boolean
 }): Promise<AdminDataImportResult> {
   const { data } = await apiClient.post<AdminDataImportResult>('/admin/accounts/data', {
     data: payload.data,
-    skip_default_group_bind: payload.skip_default_group_bind
+    skip_default_group_bind: payload.skip_default_group_bind,
+    overwrite_existing: payload.overwrite_existing
   })
   return data
 }

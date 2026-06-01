@@ -29,6 +29,7 @@ type DataPayload struct {
 	Version    int           `json:"version,omitempty"`
 	ExportedAt string        `json:"exported_at"`
 	Proxies    []DataProxy   `json:"proxies"`
+	Groups     []DataGroup   `json:"groups"`
 	Accounts   []DataAccount `json:"accounts"`
 }
 
@@ -43,6 +44,16 @@ type DataProxy struct {
 	Status   string `json:"status"`
 }
 
+type DataGroup struct {
+	Name             string  `json:"name"`
+	Description      string  `json:"description,omitempty"`
+	Platform         string  `json:"platform"`
+	RateMultiplier   float64 `json:"rate_multiplier"`
+	IsExclusive      bool    `json:"is_exclusive"`
+	Status           string  `json:"status"`
+	SubscriptionType string  `json:"subscription_type,omitempty"`
+}
+
 // DataAccount 是管理员显式备份导出使用的账号结构，故意不走 dto.Account 的脱敏路径，
 // Credentials 原文返回。这是"管理员备份"这一显式行为的一部分；如未来需要导出脱敏版本，
 // 应新增独立结构而非修改这里。
@@ -54,6 +65,7 @@ type DataAccount struct {
 	Credentials        map[string]any `json:"credentials"`
 	Extra              map[string]any `json:"extra,omitempty"`
 	ProxyKey           *string        `json:"proxy_key,omitempty"`
+	GroupNames         []string       `json:"group_names,omitempty"`
 	Concurrency        int            `json:"concurrency"`
 	Priority           int            `json:"priority"`
 	RateMultiplier     *float64       `json:"rate_multiplier,omitempty"`
@@ -64,13 +76,18 @@ type DataAccount struct {
 type DataImportRequest struct {
 	Data                 DataPayload `json:"data"`
 	SkipDefaultGroupBind *bool       `json:"skip_default_group_bind"`
+	OverwriteExisting    *bool       `json:"overwrite_existing"`
 }
 
 type DataImportResult struct {
 	ProxyCreated   int               `json:"proxy_created"`
 	ProxyReused    int               `json:"proxy_reused"`
 	ProxyFailed    int               `json:"proxy_failed"`
+	GroupCreated   int               `json:"group_created"`
+	GroupReused    int               `json:"group_reused"`
+	GroupFailed    int               `json:"group_failed"`
 	AccountCreated int               `json:"account_created"`
+	AccountUpdated int               `json:"account_updated"`
 	AccountFailed  int               `json:"account_failed"`
 	Errors         []DataImportError `json:"errors,omitempty"`
 }
@@ -84,6 +101,10 @@ type DataImportError struct {
 
 func buildProxyKey(protocol, host string, port int, username, password string) string {
 	return fmt.Sprintf("%s|%s|%d|%s|%s", strings.TrimSpace(protocol), strings.TrimSpace(host), port, strings.TrimSpace(username), strings.TrimSpace(password))
+}
+
+func buildGroupKey(platform, name string) string {
+	return strings.ToLower(strings.TrimSpace(platform)) + "|" + strings.TrimSpace(name)
 }
 
 func (h *AccountHandler) ExportData(c *gin.Context) {
@@ -102,6 +123,12 @@ func (h *AccountHandler) ExportData(c *gin.Context) {
 	}
 
 	includeProxies, err := parseIncludeProxies(c)
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	includeGroups, err := parseIncludeGroups(c)
 	if err != nil {
 		response.BadRequest(c, err.Error())
 		return
@@ -136,6 +163,8 @@ func (h *AccountHandler) ExportData(c *gin.Context) {
 		})
 	}
 
+	groupByID, dataGroups := resolveDataGroups(accounts, includeGroups)
+
 	dataAccounts := make([]DataAccount, 0, len(accounts))
 	for i := range accounts {
 		acc := accounts[i]
@@ -150,6 +179,7 @@ func (h *AccountHandler) ExportData(c *gin.Context) {
 			v := acc.ExpiresAt.Unix()
 			expiresAt = &v
 		}
+		groupNames := resolveAccountGroupNames(acc, groupByID, includeGroups)
 		dataAccounts = append(dataAccounts, DataAccount{
 			Name:               acc.Name,
 			Notes:              acc.Notes,
@@ -158,6 +188,7 @@ func (h *AccountHandler) ExportData(c *gin.Context) {
 			Credentials:        acc.Credentials,
 			Extra:              acc.Extra,
 			ProxyKey:           proxyKey,
+			GroupNames:         groupNames,
 			Concurrency:        acc.Concurrency,
 			Priority:           acc.Priority,
 			RateMultiplier:     acc.RateMultiplier,
@@ -169,6 +200,7 @@ func (h *AccountHandler) ExportData(c *gin.Context) {
 	payload := DataPayload{
 		ExportedAt: time.Now().UTC().Format(time.RFC3339),
 		Proxies:    dataProxies,
+		Groups:     dataGroups,
 		Accounts:   dataAccounts,
 	}
 
@@ -197,9 +229,17 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 	if req.SkipDefaultGroupBind != nil {
 		skipDefaultGroupBind = *req.SkipDefaultGroupBind
 	}
+	overwriteExisting := true
+	if req.OverwriteExisting != nil {
+		overwriteExisting = *req.OverwriteExisting
+	}
 
 	dataPayload := req.Data
 	result := DataImportResult{}
+	existingAccounts, err := h.listAccountsFiltered(ctx, "", "", "", "", 0, "", "created_at", "desc")
+	if err != nil {
+		return result, err
+	}
 
 	existingProxies, err := h.listAllProxies(ctx)
 	if err != nil {
@@ -272,6 +312,62 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 	}
 
 	// 收集需要异步设置隐私的 Antigravity OAuth 账号
+	existingGroups, err := h.listAllGroups(ctx)
+	if err != nil {
+		return result, err
+	}
+
+	groupKeyToID := make(map[string]int64, len(existingGroups)+len(dataPayload.Groups))
+	groupNameToID := make(map[string]int64, len(existingGroups)+len(dataPayload.Groups))
+	for i := range existingGroups {
+		g := existingGroups[i]
+		groupKeyToID[buildGroupKey(g.Platform, g.Name)] = g.ID
+		if _, exists := groupNameToID[g.Name]; !exists {
+			groupNameToID[g.Name] = g.ID
+		}
+	}
+
+	for i := range dataPayload.Groups {
+		item := dataPayload.Groups[i]
+		if err := validateDataGroup(item); err != nil {
+			result.GroupFailed++
+			result.Errors = append(result.Errors, DataImportError{
+				Kind:    "group",
+				Name:    item.Name,
+				Message: err.Error(),
+			})
+			continue
+		}
+		key := buildGroupKey(item.Platform, item.Name)
+		if existingID, ok := groupKeyToID[key]; ok {
+			groupKeyToID[key] = existingID
+			groupNameToID[item.Name] = existingID
+			result.GroupReused++
+			continue
+		}
+
+		created, createErr := h.adminService.CreateGroup(ctx, &service.CreateGroupInput{
+			Name:             item.Name,
+			Description:      item.Description,
+			Platform:         item.Platform,
+			RateMultiplier:   item.RateMultiplier,
+			IsExclusive:      item.IsExclusive,
+			SubscriptionType: item.SubscriptionType,
+		})
+		if createErr != nil {
+			result.GroupFailed++
+			result.Errors = append(result.Errors, DataImportError{
+				Kind:    "group",
+				Name:    item.Name,
+				Message: createErr.Error(),
+			})
+			continue
+		}
+		groupKeyToID[key] = created.ID
+		groupNameToID[item.Name] = created.ID
+		result.GroupCreated++
+	}
+
 	var privacyAccounts []*service.Account
 
 	for i := range dataPayload.Accounts {
@@ -302,26 +398,72 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 			}
 		}
 
+		groupIDs, groupResolveErr := resolveImportGroupIDs(item.GroupNames, item.Platform, groupKeyToID, groupNameToID)
+		if groupResolveErr != nil {
+			result.AccountFailed++
+			result.Errors = append(result.Errors, DataImportError{
+				Kind:    "account",
+				Name:    item.Name,
+				Message: groupResolveErr.Error(),
+			})
+			continue
+		}
+
 		enrichCredentialsFromIDToken(&item)
 
 		accountInput := &service.CreateAccountInput{
-			Name:                 item.Name,
-			Notes:                item.Notes,
-			Platform:             item.Platform,
-			Type:                 item.Type,
-			Credentials:          item.Credentials,
-			Extra:                item.Extra,
-			ProxyID:              proxyID,
-			Concurrency:          item.Concurrency,
-			Priority:             item.Priority,
-			RateMultiplier:       item.RateMultiplier,
-			GroupIDs:             nil,
-			ExpiresAt:            item.ExpiresAt,
-			AutoPauseOnExpired:   item.AutoPauseOnExpired,
-			SkipDefaultGroupBind: skipDefaultGroupBind,
+			Name:                  item.Name,
+			Notes:                 item.Notes,
+			Platform:              item.Platform,
+			Type:                  item.Type,
+			Credentials:           item.Credentials,
+			Extra:                 item.Extra,
+			ProxyID:               proxyID,
+			Concurrency:           item.Concurrency,
+			Priority:              item.Priority,
+			RateMultiplier:        item.RateMultiplier,
+			GroupIDs:              groupIDs,
+			ExpiresAt:             item.ExpiresAt,
+			AutoPauseOnExpired:    item.AutoPauseOnExpired,
+			SkipDefaultGroupBind:  skipDefaultGroupBind,
+			SkipMixedChannelCheck: true,
 		}
 
-		created, err := h.adminService.CreateAccount(ctx, accountInput)
+		var created *service.Account
+		if overwriteExisting {
+			if existing := findExistingDataAccount(item, existingAccounts); existing != nil {
+				groupIDsCopy := append([]int64(nil), groupIDs...)
+				updateProxyID := proxyID
+				if updateProxyID == nil {
+					clearProxyID := int64(0)
+					updateProxyID = &clearProxyID
+				}
+				created, err = h.adminService.UpdateAccount(ctx, existing.ID, &service.UpdateAccountInput{
+					Name:                  item.Name,
+					Notes:                 item.Notes,
+					Type:                  item.Type,
+					Credentials:           item.Credentials,
+					Extra:                 item.Extra,
+					ProxyID:               updateProxyID,
+					Concurrency:           &item.Concurrency,
+					Priority:              &item.Priority,
+					RateMultiplier:        item.RateMultiplier,
+					GroupIDs:              &groupIDsCopy,
+					ExpiresAt:             item.ExpiresAt,
+					AutoPauseOnExpired:    item.AutoPauseOnExpired,
+					SkipMixedChannelCheck: true,
+				})
+				if err == nil {
+					result.AccountUpdated++
+				}
+			}
+		}
+		if created == nil && err == nil {
+			created, err = h.adminService.CreateAccount(ctx, accountInput)
+			if err == nil {
+				result.AccountCreated++
+			}
+		}
 		if err != nil {
 			result.AccountFailed++
 			result.Errors = append(result.Errors, DataImportError{
@@ -335,7 +477,6 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 		if created.Platform == service.PlatformAntigravity && created.Type == service.AccountTypeOAuth {
 			privacyAccounts = append(privacyAccounts, created)
 		}
-		result.AccountCreated++
 	}
 
 	// 异步设置 Antigravity 隐私，避免大量导入时阻塞请求
@@ -364,6 +505,24 @@ func (h *AccountHandler) listAllProxies(ctx context.Context) ([]service.Proxy, e
 	var out []service.Proxy
 	for {
 		items, total, err := h.adminService.ListProxies(ctx, page, pageSize, "", "", "", "created_at", "desc")
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, items...)
+		if len(out) >= int(total) || len(items) == 0 {
+			break
+		}
+		page++
+	}
+	return out, nil
+}
+
+func (h *AccountHandler) listAllGroups(ctx context.Context) ([]service.Group, error) {
+	page := 1
+	pageSize := dataPageCap
+	var out []service.Group
+	for {
+		items, total, err := h.adminService.ListGroups(ctx, page, pageSize, "", "", "", nil, "created_at", "desc")
 		if err != nil {
 			return nil, err
 		}
@@ -465,6 +624,86 @@ func (h *AccountHandler) resolveExportProxies(ctx context.Context, accounts []se
 	return h.adminService.GetProxiesByIDs(ctx, ids)
 }
 
+func resolveDataGroups(accounts []service.Account, includeGroups bool) (map[int64]*service.Group, []DataGroup) {
+	groupByID := make(map[int64]*service.Group)
+	if !includeGroups {
+		return groupByID, []DataGroup{}
+	}
+
+	dataGroups := make([]DataGroup, 0)
+	for i := range accounts {
+		for _, group := range accountGroupsForExport(accounts[i]) {
+			if group == nil || group.ID <= 0 {
+				continue
+			}
+			if _, exists := groupByID[group.ID]; exists {
+				continue
+			}
+			groupByID[group.ID] = group
+			dataGroups = append(dataGroups, DataGroup{
+				Name:             group.Name,
+				Description:      group.Description,
+				Platform:         group.Platform,
+				RateMultiplier:   normalizeDataGroupRateMultiplier(group.RateMultiplier),
+				IsExclusive:      group.IsExclusive,
+				Status:           group.Status,
+				SubscriptionType: group.SubscriptionType,
+			})
+		}
+	}
+	return groupByID, dataGroups
+}
+
+func accountGroupsForExport(acc service.Account) []*service.Group {
+	if len(acc.Groups) > 0 {
+		return acc.Groups
+	}
+	groups := make([]*service.Group, 0, len(acc.AccountGroups))
+	for i := range acc.AccountGroups {
+		if acc.AccountGroups[i].Group != nil {
+			groups = append(groups, acc.AccountGroups[i].Group)
+		}
+	}
+	return groups
+}
+
+func resolveAccountGroupNames(acc service.Account, groupByID map[int64]*service.Group, includeGroups bool) []string {
+	if !includeGroups {
+		return nil
+	}
+	names := make([]string, 0)
+	seen := map[string]struct{}{}
+	appendName := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		if _, exists := seen[name]; exists {
+			return
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	for _, group := range accountGroupsForExport(acc) {
+		if group != nil {
+			appendName(group.Name)
+		}
+	}
+	for _, id := range acc.GroupIDs {
+		if group := groupByID[id]; group != nil {
+			appendName(group.Name)
+		}
+	}
+	return names
+}
+
+func normalizeDataGroupRateMultiplier(value float64) float64 {
+	if value <= 0 {
+		return 1
+	}
+	return value
+}
+
 func parseAccountIDs(c *gin.Context) ([]int64, error) {
 	values := c.QueryArray("ids")
 	if len(values) == 0 {
@@ -495,17 +734,25 @@ func parseAccountIDs(c *gin.Context) ([]int64, error) {
 }
 
 func parseIncludeProxies(c *gin.Context) (bool, error) {
-	raw := strings.TrimSpace(strings.ToLower(c.Query("include_proxies")))
-	if raw == "" {
-		return true, nil
+	return parseBoolQueryDefault(c.Query("include_proxies"), true, "include_proxies")
+}
+
+func parseIncludeGroups(c *gin.Context) (bool, error) {
+	return parseBoolQueryDefault(c.Query("include_groups"), true, "include_groups")
+}
+
+func parseBoolQueryDefault(raw string, defaultValue bool, name string) (bool, error) {
+	value := strings.TrimSpace(strings.ToLower(raw))
+	if value == "" {
+		return defaultValue, nil
 	}
-	switch raw {
+	switch value {
 	case "1", "true", "yes", "on":
 		return true, nil
 	case "0", "false", "no", "off":
 		return false, nil
 	default:
-		return true, fmt.Errorf("invalid include_proxies value: %s", raw)
+		return defaultValue, fmt.Errorf("invalid %s value: %s", name, raw)
 	}
 }
 
@@ -518,6 +765,9 @@ func validateDataHeader(payload DataPayload) error {
 	}
 	if payload.Proxies == nil {
 		return errors.New("proxies is required")
+	}
+	if payload.Groups == nil {
+		payload.Groups = []DataGroup{}
 	}
 	if payload.Accounts == nil {
 		return errors.New("accounts is required")
@@ -547,6 +797,121 @@ func validateDataProxy(item DataProxy) error {
 		}
 	}
 	return nil
+}
+
+func validateDataGroup(item DataGroup) error {
+	if strings.TrimSpace(item.Name) == "" {
+		return errors.New("group name is required")
+	}
+	if strings.TrimSpace(item.Platform) == "" {
+		return errors.New("group platform is required")
+	}
+	if item.RateMultiplier < 0 {
+		return errors.New("group rate_multiplier must be >= 0")
+	}
+	if item.Status != "" {
+		normalizedStatus := normalizeProxyStatus(item.Status)
+		if normalizedStatus != service.StatusActive && normalizedStatus != "inactive" {
+			return fmt.Errorf("group status is invalid: %s", item.Status)
+		}
+	}
+	return nil
+}
+
+func resolveImportGroupIDs(groupNames []string, platform string, groupKeyToID, groupNameToID map[string]int64) ([]int64, error) {
+	if len(groupNames) == 0 {
+		return nil, nil
+	}
+	groupIDs := make([]int64, 0, len(groupNames))
+	seen := map[int64]struct{}{}
+	for _, rawName := range groupNames {
+		name := strings.TrimSpace(rawName)
+		if name == "" {
+			continue
+		}
+		id, ok := groupKeyToID[buildGroupKey(platform, name)]
+		if !ok {
+			id, ok = groupNameToID[name]
+		}
+		if !ok || id <= 0 {
+			return nil, fmt.Errorf("group not found: %s", name)
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		groupIDs = append(groupIDs, id)
+	}
+	return groupIDs, nil
+}
+
+func findExistingDataAccount(item DataAccount, accounts []service.Account) *service.Account {
+	itemKeys := stableAccountMatchKeys(item.Platform, item.Type, item.Credentials, item.Extra)
+	if len(itemKeys) == 0 {
+		itemKeys = []string{fallbackAccountNameKey(item.Platform, item.Type, item.Name)}
+	}
+	for i := range accounts {
+		acc := accounts[i]
+		if acc.Platform != item.Platform || acc.Type != item.Type {
+			continue
+		}
+		existingKeys := stableAccountMatchKeys(acc.Platform, acc.Type, acc.Credentials, acc.Extra)
+		if len(itemKeys) == 1 && itemKeys[0] == fallbackAccountNameKey(item.Platform, item.Type, item.Name) && len(existingKeys) == 0 {
+			existingKeys = []string{fallbackAccountNameKey(acc.Platform, acc.Type, acc.Name)}
+		}
+		for _, itemKey := range itemKeys {
+			for _, existingKey := range existingKeys {
+				if itemKey == existingKey {
+					return &accounts[i]
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func stableAccountMatchKeys(platform, accountType string, credentials, extra map[string]any) []string {
+	prefix := strings.ToLower(strings.TrimSpace(platform)) + "|" + strings.ToLower(strings.TrimSpace(accountType)) + "|"
+	keys := make([]string, 0, 8)
+	add := func(kind, value string) {
+		value = strings.TrimSpace(strings.ToLower(value))
+		if value == "" {
+			return
+		}
+		keys = append(keys, prefix+kind+"|"+value)
+	}
+	for _, field := range []string{
+		"chatgpt_account_id",
+		"chatgpt_user_id",
+		"account_id",
+		"user_id",
+		"email",
+		"email_address",
+		"sub",
+		"organization_id",
+	} {
+		add(field, dataMapString(credentials, field))
+		add(field, dataMapString(extra, field))
+	}
+	return keys
+}
+
+func fallbackAccountNameKey(platform, accountType, name string) string {
+	return strings.ToLower(strings.TrimSpace(platform)) + "|" + strings.ToLower(strings.TrimSpace(accountType)) + "|name|" + strings.ToLower(strings.TrimSpace(name))
+}
+
+func dataMapString(values map[string]any, key string) string {
+	if values == nil {
+		return ""
+	}
+	switch v := values[key].(type) {
+	case string:
+		return v
+	case fmt.Stringer:
+		return v.String()
+	default:
+		return ""
+	}
 }
 
 func validateDataAccount(item DataAccount) error {

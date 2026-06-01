@@ -16,6 +16,15 @@
         {{ t('admin.accounts.dataImportWarning') }}
       </div>
 
+      <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+        <input
+          v-model="overwriteExisting"
+          type="checkbox"
+          class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+        />
+        <span>{{ t('admin.accounts.dataImportOverwriteExisting') }}</span>
+      </label>
+
       <div>
         <label class="input-label">{{ t('admin.accounts.dataImportFile') }}</label>
         <div
@@ -110,6 +119,7 @@ const appStore = useAppStore()
 const importing = ref(false)
 const file = ref<File | null>(null)
 const result = ref<AdminDataImportResult | null>(null)
+const overwriteExisting = ref(true)
 
 const fileInput = ref<HTMLInputElement | null>(null)
 const fileName = computed(() => file.value?.name || '')
@@ -122,6 +132,7 @@ watch(
     if (open) {
       file.value = null
       result.value = null
+      overwriteExisting.value = true
       if (fileInput.value) {
         fileInput.value.value = ''
       }
@@ -174,19 +185,24 @@ const handleImport = async () => {
 
     const res = await adminAPI.accounts.importData({
       data: dataPayload,
-      skip_default_group_bind: true
+      skip_default_group_bind: true,
+      overwrite_existing: overwriteExisting.value
     })
 
     result.value = res
 
     const msgParams: Record<string, unknown> = {
       account_created: res.account_created,
+      account_updated: res.account_updated,
       account_failed: res.account_failed,
       proxy_created: res.proxy_created,
       proxy_reused: res.proxy_reused,
       proxy_failed: res.proxy_failed,
+      group_created: res.group_created,
+      group_reused: res.group_reused,
+      group_failed: res.group_failed,
     }
-    if (res.account_failed > 0 || res.proxy_failed > 0) {
+    if (res.account_failed > 0 || res.proxy_failed > 0 || res.group_failed > 0) {
       appStore.showError(t('admin.accounts.dataImportCompletedWithErrors', msgParams))
     } else {
       appStore.showSuccess(t('admin.accounts.dataImportSuccess', msgParams))

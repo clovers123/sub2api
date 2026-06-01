@@ -21,6 +21,7 @@ type dataPayload struct {
 	Type     string        `json:"type"`
 	Version  int           `json:"version"`
 	Proxies  []dataProxy   `json:"proxies"`
+	Groups   []dataGroup   `json:"groups"`
 	Accounts []dataAccount `json:"accounts"`
 }
 
@@ -35,6 +36,13 @@ type dataProxy struct {
 	Status   string `json:"status"`
 }
 
+type dataGroup struct {
+	Name           string  `json:"name"`
+	Platform       string  `json:"platform"`
+	RateMultiplier float64 `json:"rate_multiplier"`
+	Status         string  `json:"status"`
+}
+
 type dataAccount struct {
 	Name        string         `json:"name"`
 	Platform    string         `json:"platform"`
@@ -42,6 +50,7 @@ type dataAccount struct {
 	Credentials map[string]any `json:"credentials"`
 	Extra       map[string]any `json:"extra"`
 	ProxyKey    *string        `json:"proxy_key"`
+	GroupNames  []string       `json:"group_names"`
 	Concurrency int            `json:"concurrency"`
 	Priority    int            `json:"priority"`
 }
@@ -76,6 +85,7 @@ func TestExportDataIncludesSecrets(t *testing.T) {
 	router, adminSvc := setupAccountDataRouter()
 
 	proxyID := int64(11)
+	groupID := int64(31)
 	adminSvc.proxies = []service.Proxy{
 		{
 			ID:       proxyID,
@@ -110,6 +120,16 @@ func TestExportDataIncludesSecrets(t *testing.T) {
 			Concurrency: 3,
 			Priority:    50,
 			Status:      service.StatusDisabled,
+			GroupIDs:    []int64{groupID},
+			Groups: []*service.Group{
+				{
+					ID:             groupID,
+					Name:           "openai-group",
+					Platform:       service.PlatformOpenAI,
+					RateMultiplier: 1.2,
+					Status:         service.StatusActive,
+				},
+			},
 		},
 	}
 
@@ -125,8 +145,11 @@ func TestExportDataIncludesSecrets(t *testing.T) {
 	require.Equal(t, 0, resp.Data.Version)
 	require.Len(t, resp.Data.Proxies, 1)
 	require.Equal(t, "pass", resp.Data.Proxies[0].Password)
+	require.Len(t, resp.Data.Groups, 1)
+	require.Equal(t, "openai-group", resp.Data.Groups[0].Name)
 	require.Len(t, resp.Data.Accounts, 1)
 	require.Equal(t, "secret", resp.Data.Accounts[0].Credentials["token"])
+	require.Equal(t, []string{"openai-group"}, resp.Data.Accounts[0].GroupNames)
 }
 
 func TestExportDataWithoutProxies(t *testing.T) {
@@ -170,6 +193,39 @@ func TestExportDataWithoutProxies(t *testing.T) {
 	require.Len(t, resp.Data.Proxies, 0)
 	require.Len(t, resp.Data.Accounts, 1)
 	require.Nil(t, resp.Data.Accounts[0].ProxyKey)
+}
+
+func TestExportDataWithoutGroups(t *testing.T) {
+	router, adminSvc := setupAccountDataRouter()
+
+	adminSvc.accounts = []service.Account{
+		{
+			ID:          21,
+			Name:        "account",
+			Platform:    service.PlatformOpenAI,
+			Type:        service.AccountTypeOAuth,
+			Credentials: map[string]any{"token": "secret"},
+			GroupIDs:    []int64{31},
+			Groups: []*service.Group{
+				{ID: 31, Name: "openai-group", Platform: service.PlatformOpenAI, RateMultiplier: 1, Status: service.StatusActive},
+			},
+			Concurrency: 3,
+			Priority:    50,
+			Status:      service.StatusActive,
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/data?include_groups=false", nil)
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp dataResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, 0, resp.Code)
+	require.Len(t, resp.Data.Groups, 0)
+	require.Len(t, resp.Data.Accounts, 1)
+	require.Empty(t, resp.Data.Accounts[0].GroupNames)
 }
 
 func TestExportDataPassesAccountFiltersAndSort(t *testing.T) {
@@ -249,6 +305,7 @@ func TestImportDataReusesProxyAndSkipsDefaultGroup(t *testing.T) {
 					"status":    "active",
 				},
 			},
+			"groups": []map[string]any{},
 			"accounts": []map[string]any{
 				{
 					"name":        "acc",
@@ -274,4 +331,98 @@ func TestImportDataReusesProxyAndSkipsDefaultGroup(t *testing.T) {
 	require.Len(t, adminSvc.createdProxies, 0)
 	require.Len(t, adminSvc.createdAccounts, 1)
 	require.True(t, adminSvc.createdAccounts[0].SkipDefaultGroupBind)
+}
+
+func TestImportDataCreatesMissingGroupAndBindsAccount(t *testing.T) {
+	router, adminSvc := setupAccountDataRouter()
+	adminSvc.groups = []service.Group{}
+
+	dataPayload := map[string]any{
+		"data": map[string]any{
+			"type":    dataType,
+			"version": dataVersion,
+			"proxies": []map[string]any{},
+			"groups": []map[string]any{
+				{
+					"name":            "openai-imported",
+					"platform":        service.PlatformOpenAI,
+					"rate_multiplier": 1,
+					"status":          "active",
+				},
+			},
+			"accounts": []map[string]any{
+				{
+					"name":        "acc",
+					"platform":    service.PlatformOpenAI,
+					"type":        service.AccountTypeOAuth,
+					"credentials": map[string]any{"token": "x"},
+					"group_names": []string{"openai-imported"},
+					"concurrency": 3,
+					"priority":    50,
+				},
+			},
+		},
+		"skip_default_group_bind": true,
+	}
+
+	body, _ := json.Marshal(dataPayload)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/data", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Len(t, adminSvc.createdGroups, 1)
+	require.Equal(t, "openai-imported", adminSvc.createdGroups[0].Name)
+	require.Len(t, adminSvc.createdAccounts, 1)
+	require.Equal(t, []int64{200}, adminSvc.createdAccounts[0].GroupIDs)
+}
+
+func TestImportDataOverwritesExistingAccount(t *testing.T) {
+	router, adminSvc := setupAccountDataRouter()
+	adminSvc.accounts = []service.Account{
+		{
+			ID:          99,
+			Name:        "old",
+			Platform:    service.PlatformOpenAI,
+			Type:        service.AccountTypeOAuth,
+			Credentials: map[string]any{"chatgpt_account_id": "acct-1", "token": "old"},
+			Concurrency: 1,
+			Priority:    10,
+			Status:      service.StatusActive,
+		},
+	}
+
+	dataPayload := map[string]any{
+		"data": map[string]any{
+			"type":    dataType,
+			"version": dataVersion,
+			"proxies": []map[string]any{},
+			"groups":  []map[string]any{},
+			"accounts": []map[string]any{
+				{
+					"name":        "new",
+					"platform":    service.PlatformOpenAI,
+					"type":        service.AccountTypeOAuth,
+					"credentials": map[string]any{"chatgpt_account_id": "acct-1", "token": "new"},
+					"concurrency": 5,
+					"priority":    20,
+				},
+			},
+		},
+		"overwrite_existing": true,
+	}
+
+	body, _ := json.Marshal(dataPayload)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/data", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Len(t, adminSvc.createdAccounts, 0)
+	require.Len(t, adminSvc.updatedAccountIDs, 1)
+	require.Equal(t, int64(99), adminSvc.updatedAccountIDs[0])
+	require.Equal(t, "new", adminSvc.updatedAccounts[0].Name)
+	require.Equal(t, 5, *adminSvc.updatedAccounts[0].Concurrency)
 }

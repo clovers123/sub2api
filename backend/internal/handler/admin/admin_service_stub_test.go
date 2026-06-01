@@ -21,6 +21,9 @@ type stubAdminService struct {
 	boundAuthIdentityFor int64
 	createdAccounts      []*service.CreateAccountInput
 	createdProxies       []*service.CreateProxyInput
+	createdGroups        []*service.CreateGroupInput
+	updatedAccountIDs    []int64
+	updatedAccounts      []*service.UpdateAccountInput
 	updatedProxyIDs      []int64
 	updatedProxies       []*service.UpdateProxyInput
 	testedProxyIDs       []int64
@@ -273,6 +276,9 @@ func (s *stubAdminService) GetGroupModelsListCandidates(ctx context.Context, id 
 }
 
 func (s *stubAdminService) CreateGroup(ctx context.Context, input *service.CreateGroupInput) (*service.Group, error) {
+	s.mu.Lock()
+	s.createdGroups = append(s.createdGroups, input)
+	s.mu.Unlock()
 	group := service.Group{ID: 200, Name: input.Name, Status: service.StatusActive}
 	return &group, nil
 }
@@ -349,6 +355,10 @@ func (s *stubAdminService) CreateAccount(ctx context.Context, input *service.Cre
 }
 
 func (s *stubAdminService) UpdateAccount(ctx context.Context, id int64, input *service.UpdateAccountInput) (*service.Account, error) {
+	s.mu.Lock()
+	s.updatedAccountIDs = append(s.updatedAccountIDs, id)
+	s.updatedAccounts = append(s.updatedAccounts, input)
+	s.mu.Unlock()
 	if s.updateAccountErr != nil {
 		return nil, s.updateAccountErr
 	}
