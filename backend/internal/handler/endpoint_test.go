@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -160,4 +161,50 @@ func TestGetUpstreamEndpoint_FullFlow(t *testing.T) {
 
 	got := GetUpstreamEndpoint(c, service.PlatformOpenAI)
 	require.Equal(t, "/v1/responses/compact", got)
+}
+
+func TestResolveRawCCUpstreamEndpoint_KnownChatOnlyBaseURL(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	c.Set(ctxKeyInboundEndpoint, NormalizeInboundEndpoint(c.Request.URL.Path))
+
+	t.Run("known chat only base url records chat completions upstream", func(t *testing.T) {
+		account := &service.Account{
+			Platform: service.PlatformOpenAI,
+			Type:     service.AccountTypeAPIKey,
+			Credentials: map[string]any{
+				"base_url": "https://api.minimaxi.com/v1",
+			},
+		}
+
+		require.Equal(t, EndpointChatCompletions, resolveRawCCUpstreamEndpoint(c, account))
+	})
+
+	t.Run("unknown base url preserves responses upstream", func(t *testing.T) {
+		account := &service.Account{
+			Platform: service.PlatformOpenAI,
+			Type:     service.AccountTypeAPIKey,
+			Credentials: map[string]any{
+				"base_url": "https://compat-upstream.example/v1",
+			},
+		}
+
+		require.Equal(t, EndpointResponses, resolveRawCCUpstreamEndpoint(c, account))
+	})
+
+	t.Run("force responses overrides known chat only base url", func(t *testing.T) {
+		account := &service.Account{
+			Platform: service.PlatformOpenAI,
+			Type:     service.AccountTypeAPIKey,
+			Credentials: map[string]any{
+				"base_url": "https://api.moonshot.ai/v1",
+			},
+			Extra: map[string]any{
+				openai_compat.ExtraKeyResponsesMode: string(openai_compat.ResponsesSupportModeForceResponses),
+			},
+		}
+
+		require.Equal(t, EndpointResponses, resolveRawCCUpstreamEndpoint(c, account))
+	})
 }

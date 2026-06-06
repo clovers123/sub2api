@@ -2315,7 +2315,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	reqModel, reqStream, promptCacheKey := extractOpenAIRequestMetaFromBody(body)
 	originalModel := reqModel
 
-	if account.Type == AccountTypeAPIKey && !openai_compat.ShouldUseResponsesAPI(account.Extra) {
+	if account.Type == AccountTypeAPIKey && !openai_compat.ShouldUseResponsesAPIForBaseURL(account.Extra, account.GetOpenAIBaseURL()) {
 		return s.forwardResponsesViaRawChatCompletions(ctx, c, account, body)
 	}
 
@@ -3041,6 +3041,16 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 			upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 			upstreamCode := extractUpstreamErrorCode(respBody)
+			if account.Type == AccountTypeAPIKey &&
+				openai_compat.ResolveResponsesSupport(account.Extra) == openai_compat.ResponsesSupportUnknown &&
+				!isResponsesEndpointSupportedByStatus(resp.StatusCode) {
+				logger.L().Info("openai responses: /responses unsupported, falling back to raw chat completions",
+					zap.Int64("account_id", account.ID),
+					zap.Int("upstream_status", resp.StatusCode),
+					zap.String("upstream_message", upstreamMsg),
+				)
+				return s.forwardResponsesViaRawChatCompletions(ctx, c, account, originalBody)
+			}
 			if !httpInvalidEncryptedContentRetryTried && resp.StatusCode == http.StatusBadRequest && upstreamCode == "invalid_encrypted_content" {
 				if trimOpenAIEncryptedReasoningItems(reqBody) {
 					body, err = json.Marshal(reqBody)

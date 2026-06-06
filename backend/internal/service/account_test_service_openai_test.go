@@ -389,6 +389,48 @@ func TestAccountTestService_OpenAIAPIKeyResponsesUnsupportedUsesChatCompletionsP
 	require.NotContains(t, body, "当前测试接口仅支持 Responses API 路径")
 }
 
+func TestAccountTestService_OpenAIKnownChatOnlyBaseURLUsesChatCompletionsPath(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, recorder := newTestContext()
+
+	upstreamBody := strings.Join([]string{
+		`data: {"id":"chatcmpl_test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"pong"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl_test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+	svc := &AccountTestService{
+		httpUpstream: upstream,
+		cfg:          &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
+	}
+	account := &Account{
+		ID:          96,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://api.minimax.chat/v1",
+		},
+	}
+
+	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.5", "hello", "")
+	require.NoError(t, err)
+	require.NotNil(t, upstream.lastReq)
+	require.Equal(t, "https://api.minimax.chat/v1/chat/completions", upstream.lastReq.URL.String())
+	require.Equal(t, "hello", gjson.GetBytes(upstream.lastBody, "messages.0.content").String())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "input").Exists())
+	require.Contains(t, recorder.Body.String(), "pong")
+	require.Contains(t, recorder.Body.String(), `"success":true`)
+}
+
 func TestAccountTestService_OpenAIChatCompletionsPathReturns4xx(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, recorder := newTestContext()
@@ -479,4 +521,33 @@ func TestAccountTestService_OpenAIChatCompletionsPathRejectsNonJSONStream(t *tes
 	require.Contains(t, err.Error(), "Invalid Chat Completions response from /v1/chat/completions")
 	require.Contains(t, recorder.Body.String(), "/v1/chat/completions")
 	require.NotContains(t, recorder.Body.String(), `"success":true`)
+}
+
+func TestProbeOpenAIAPIKeyResponsesSupport_KnownChatOnlyPersistsUnsupportedWithoutRequest(t *testing.T) {
+	account := &Account{
+		ID:          95,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://api.minimax.chat/v1",
+		},
+	}
+	repo := &openAIAccountTestRepo{
+		mockAccountRepoForGemini: mockAccountRepoForGemini{
+			accountsByID: map[int64]*Account{account.ID: account},
+		},
+	}
+	upstream := &httpUpstreamRecorder{resp: newJSONResponse(http.StatusOK, `{}`)}
+	svc := &AccountTestService{
+		accountRepo:  repo,
+		httpUpstream: upstream,
+		cfg:          &config.Config{},
+	}
+
+	svc.ProbeOpenAIAPIKeyResponsesSupport(context.Background(), account.ID)
+
+	require.Equal(t, false, repo.updatedExtra[openai_compat.ExtraKeyResponsesSupported])
+	require.Empty(t, upstream.requests)
 }

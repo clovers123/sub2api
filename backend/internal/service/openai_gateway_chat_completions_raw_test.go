@@ -478,7 +478,7 @@ func TestForwardAsChatCompletions_UnknownResponsesSupportFallbackUsesVersionedCh
 		httpUpstream: upstream,
 	}
 	account := rawChatCompletionsTestAccount()
-	account.Credentials["base_url"] = "https://open.bigmodel.cn/api/paas/v4"
+	account.Credentials["base_url"] = "https://compat-upstream.example/api/paas/v4"
 
 	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
 	require.NoError(t, err)
@@ -486,10 +486,44 @@ func TestForwardAsChatCompletions_UnknownResponsesSupportFallbackUsesVersionedCh
 	require.Equal(t, 1, result.Usage.InputTokens)
 	require.Equal(t, 2, result.Usage.OutputTokens)
 	require.Len(t, upstream.requests, 2)
-	require.Equal(t, "https://open.bigmodel.cn/api/paas/v4/responses", upstream.requests[0].URL.String())
-	require.Equal(t, "https://open.bigmodel.cn/api/paas/v4/chat/completions", upstream.requests[1].URL.String())
+	require.Equal(t, "https://compat-upstream.example/api/paas/v4/responses", upstream.requests[0].URL.String())
+	require.Equal(t, "https://compat-upstream.example/api/paas/v4/chat/completions", upstream.requests[1].URL.String())
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Contains(t, rec.Body.String(), `"content":"ok"`)
+}
+
+func TestForwardAsChatCompletions_KnownChatOnlyBaseURLRoutesDirectly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"glm-4.5-air","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_known_chat"}},
+		Body: io.NopCloser(strings.NewReader(
+			`{"id":"chatcmpl_1","object":"chat.completion","model":"glm-4.5-air","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`,
+		)),
+	}}
+
+	svc := &OpenAIGatewayService{
+		cfg:          rawChatCompletionsTestConfig(),
+		httpUpstream: upstream,
+	}
+	account := rawChatCompletionsTestAccount()
+	account.Credentials["base_url"] = "https://open.bigmodel.cn/api/paas/v4"
+
+	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.requests, 1)
+	require.Equal(t, "https://open.bigmodel.cn/api/paas/v4/chat/completions", upstream.requests[0].URL.String())
+	require.True(t, gjson.GetBytes(upstream.lastBody, "messages").Exists())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "input").Exists())
+	require.Equal(t, "ok", gjson.Get(rec.Body.String(), "choices.0.message.content").String())
 }
 
 func TestIsOpenAIChatUsageOnlyStreamChunk(t *testing.T) {

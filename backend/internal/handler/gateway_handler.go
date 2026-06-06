@@ -968,7 +968,7 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	}
 
 	if len(availableModels) > 0 {
-		writeModelsList(c, availableModels)
+		writeCustomModelsList(c, platform, availableModels)
 		return
 	}
 

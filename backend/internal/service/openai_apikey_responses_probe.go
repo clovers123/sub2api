@@ -85,6 +85,20 @@ func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Conte
 		return
 	}
 
+	if openai_compat.IsKnownChatCompletionsOnlyBaseURL(normalizedBaseURL) {
+		if err := s.accountRepo.UpdateExtra(ctx, accountID, map[string]any{
+			openai_compat.ExtraKeyResponsesSupported: false,
+		}); err != nil {
+			logger.LegacyPrintf("service.openai_probe", "probe_known_chat_only_persist_failed: account_id=%d base_url=%s err=%v", accountID, normalizedBaseURL, err)
+			return
+		}
+		logger.LegacyPrintf("service.openai_probe",
+			"probe_known_chat_only: account_id=%d base_url=%s supported=false",
+			accountID, normalizedBaseURL,
+		)
+		return
+	}
+
 	probeURL := buildOpenAIResponsesURL(normalizedBaseURL)
 
 	probeCtx, cancel := context.WithTimeout(ctx, openaiResponsesProbeTimeout)
