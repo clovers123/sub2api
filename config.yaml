@@ -1,0 +1,29 @@
+server:
+    host: 0.0.0.0
+    port: 9005
+    mode: release
+database:
+    host: localhost
+    port: 5432
+    user: mac
+    password: wuguohe
+    dbname: sub2api
+    sslmode: disable
+redis:
+    host: localhost
+    port: 6379
+    password: ""
+    db: 0
+    enable_tls: false
+jwt:
+    secret: c6a023ae9d44c0b28d4d79611f993c686a08eb3fbb89fe12032348f25366844c
+    expire_hour: 24
+default:
+    user_concurrency: 5
+    user_balance: 0
+    api_key_prefix: sk-
+    rate_multiplier: 1
+rate_limit:
+    requests_per_minute: 60
+    burst_size: 10
+timezone: Asia/Shanghai
