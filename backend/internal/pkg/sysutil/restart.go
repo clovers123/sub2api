@@ -22,6 +22,11 @@ import (
 //   - Service configured with Restart=always in systemd unit file
 func RestartService() error {
 	if runtime.GOOS != "linux" {
+		// Write a marker file so the local dev wrapper (tools/local-start.sh)
+		// can detect that setup completed and restart the backend in-place.
+		if err := writeRestartMarker(); err != nil {
+			log.Printf("Failed to write restart marker: %v", err)
+		}
 		log.Println("Service restart via exit only works on Linux with systemd")
 		return nil
 	}
@@ -45,4 +50,16 @@ func RestartServiceAsync() {
 		log.Printf("Service restart failed: %v", err)
 		log.Println("Please restart the service manually: sudo systemctl restart sub2api")
 	}
+}
+
+// writeRestartMarker writes a marker file that the local dev wrapper can watch.
+// The SUB2API_RESTART_MARKER env var (if set) specifies the path; otherwise
+// it falls back to "tmp/sub2api-restart-marker".
+func writeRestartMarker() error {
+	markerPath := os.Getenv("SUB2API_RESTART_MARKER")
+	if markerPath == "" {
+		markerPath = "tmp/sub2api-restart-marker"
+	}
+	content := []byte(time.Now().UTC().Format(time.RFC3339) + "\n")
+	return os.WriteFile(markerPath, content, 0644)
 }
