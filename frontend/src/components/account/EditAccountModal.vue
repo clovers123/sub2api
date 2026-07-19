@@ -147,7 +147,7 @@
             </div>
 
             <!-- Whitelist Mode -->
-            <div v-if="modelRestrictionMode === 'whitelist'">
+            <div v-if="modelRestrictionMode === 'whitelist' || modelRestrictionMode === 'combined'">
               <ModelWhitelistSelector v-model="allowedModels" :platform="account?.platform || 'anthropic'" :account-id="account?.id" />
               <p class="text-xs text-gray-500 dark:text-gray-400">
                 {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
@@ -158,7 +158,7 @@
             </div>
 
             <!-- Mapping Mode -->
-            <div v-else>
+            <div v-if="modelRestrictionMode === 'mapping' || modelRestrictionMode === 'combined'">
               <div class="mb-3 rounded-lg bg-purple-50 p-3 dark:bg-purple-900/20">
                 <p class="text-xs text-purple-700 dark:text-purple-400">
                   <svg
@@ -576,7 +576,7 @@
           </div>
 
           <!-- Whitelist Mode -->
-          <div v-if="modelRestrictionMode === 'whitelist'">
+          <div v-if="modelRestrictionMode === 'whitelist' || modelRestrictionMode === 'combined'">
             <ModelWhitelistSelector v-model="allowedModels" :platform="account?.platform || 'anthropic'" :account-id="account?.id" />
             <p class="text-xs text-gray-500 dark:text-gray-400">
               {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
@@ -587,7 +587,7 @@
           </div>
 
           <!-- Mapping Mode -->
-          <div v-else>
+          <div v-if="modelRestrictionMode === 'mapping' || modelRestrictionMode === 'combined'">
             <div class="mb-3 rounded-lg bg-purple-50 p-3 dark:bg-purple-900/20">
               <p class="text-xs text-purple-700 dark:text-purple-400">
                 {{ t('admin.accounts.mapRequestModels') }}
@@ -788,7 +788,7 @@
           </div>
 
           <!-- Whitelist Mode -->
-          <div v-if="modelRestrictionMode === 'whitelist'">
+          <div v-if="modelRestrictionMode === 'whitelist' || modelRestrictionMode === 'combined'">
             <ModelWhitelistSelector v-model="allowedModels" :platform="account?.platform || 'anthropic'" :account-id="account?.id" />
             <p class="text-xs text-gray-500 dark:text-gray-400">
               {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
@@ -799,7 +799,7 @@
           </div>
 
           <!-- Mapping Mode -->
-          <div v-else>
+          <div v-if="modelRestrictionMode === 'mapping' || modelRestrictionMode === 'combined'">
             <div class="mb-3 rounded-lg bg-purple-50 p-3 dark:bg-purple-900/20">
               <p class="text-xs text-purple-700 dark:text-purple-400">
                 <svg
@@ -1010,7 +1010,7 @@
           </div>
 
           <!-- Whitelist Mode -->
-          <div v-if="modelRestrictionMode === 'whitelist'">
+          <div v-if="modelRestrictionMode === 'whitelist' || modelRestrictionMode === 'combined'">
             <ModelWhitelistSelector v-model="allowedModels" platform="anthropic" />
             <p class="text-xs text-gray-500 dark:text-gray-400">
               {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
@@ -1019,7 +1019,7 @@
           </div>
 
           <!-- Mapping Mode -->
-          <div v-else class="space-y-3">
+          <div v-if="modelRestrictionMode === 'mapping' || modelRestrictionMode === 'combined'" class="space-y-3">
             <div v-for="(mapping, index) in modelMappings" :key="getModelMappingKey(mapping)" class="flex items-center gap-2">
               <input v-model="mapping.from" type="text" class="input flex-1" :placeholder="t('admin.accounts.fromModel')" />
               <span class="text-gray-400">→</span>
@@ -2845,7 +2845,7 @@ const isBedrockAPIKeyMode = computed(() =>
 )
 const modelMappings = ref<ModelMapping[]>([])
 const openAICompactModelMappings = ref<ModelMapping[]>([])
-const modelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist')
+const modelRestrictionMode = ref<'whitelist' | 'mapping' | 'combined'>('whitelist')
 const allowedModels = ref<string[]>([])
 const DEFAULT_POOL_MODE_RETRY_COUNT = 3
 const MAX_POOL_MODE_RETRY_COUNT = 10
@@ -3347,9 +3347,11 @@ const loadModelRestrictionFromMapping = (rawMapping?: Record<string, unknown>) =
   allowedModels.value = parsed.allowedModels
   modelMappings.value = parsed.modelMappings
   modelRestrictionMode.value =
-    parsed.modelMappings.length > 0 && parsed.allowedModels.length === 0
-      ? 'mapping'
-      : 'whitelist'
+    parsed.modelMappings.length > 0 && parsed.allowedModels.length > 0
+      ? 'combined'
+      : parsed.modelMappings.length > 0
+        ? 'mapping'
+        : 'whitelist'
 }
 
 const buildModelRestrictionMapping = () =>
