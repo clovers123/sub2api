@@ -3566,7 +3566,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, watch } from 'vue'
+import { ref, reactive, computed, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import {
@@ -4196,46 +4196,68 @@ const canExchangeCode = computed(() => {
   return authCode.trim() && oauth.sessionId.value && !oauth.loading.value
 })
 
-// Watchers
-watch(
-  () => props.show,
-  (newVal) => {
-    if (newVal) {
-      // Load TLS fingerprint profiles
-      adminAPI.tlsFingerprintProfiles.list()
-        .then(profiles => { tlsFingerprintProfiles.value = profiles.map(p => ({ id: p.id, name: p.name })) })
-        .catch(() => { tlsFingerprintProfiles.value = [] })
-      // Modal opened - fill related models
-      allowedModels.value = [...getModelsByPlatform(form.platform)]
-      // Antigravity: 默认使用映射模式并填充默认映射
-      if (form.platform === 'antigravity') {
-        antigravityModelRestrictionMode.value = 'mapping'
-        fetchAntigravityDefaultMappings().then(mappings => {
-          antigravityModelMappings.value = [...mappings]
-        })
-        antigravityWhitelistModels.value = []
-      } else {
-        antigravityWhitelistModels.value = []
-        antigravityModelMappings.value = []
-        antigravityModelRestrictionMode.value = 'mapping'
-      }
-      if (props.cloneFrom) applyCloneFrom(props.cloneFrom)
-    } else {
-      resetForm()
-    }
-  }
-)
+const applyCloneFrom = (source: Account) => {
+  const creds = (source.credentials ?? {}) as Record<string, unknown>
+  const sourceBaseUrl = typeof creds.base_url === 'string' ? creds.base_url : ''
 
+  // 6.1 基础字段
+  form.name = `${source.name} (Copy)`
+  form.notes = source.notes ?? ''
+  form.proxy_id = source.proxy_id ?? null
+  form.concurrency = source.concurrency
+  form.load_factor = source.load_factor ?? null
+  form.priority = source.priority
+  form.rate_multiplier = source.rate_multiplier ?? 1
+  form.group_ids = source.group_ids ? [...source.group_ids] : []
+  form.expires_at = source.expires_at ?? null
+  autoPauseOnExpired.value = source.auto_pause_on_expired
+
+  // 6.3 敏感输入框清空
+  apiKeyValue.value = ''
+  upstreamApiKey.value = ''
+  bedrockAccessKeyId.value = ''
+  bedrockSecretAccessKey.value = ''
+  bedrockSessionToken.value = ''
+  bedrockApiKeyValue.value = ''
+  vertexServiceAccountJson.value = ''
+
+  // 6.1b 同步 accountCategory/addMethod，确保平台与类型 watcher 能产出 source.type
+  if (source.type === 'apikey') {
+    accountCategory.value = 'apikey'
+  } else if (source.type === 'bedrock') {
+    accountCategory.value = 'bedrock'
+  } else if (source.type === 'service_account') {
+    accountCategory.value = 'service_account'
+  } else {
+    accountCategory.value = 'oauth-based'
+    addMethod.value = source.type === 'setup-token' ? 'setup-token' : 'oauth'
+  }
+  form.type = source.type
+
+  // 6.2 非敏感凭证字段：base_url
+  form.credentials = { ...creds }
+  delete form.credentials.base_url
+  if (source.platform === 'grok' && sourceBaseUrl) {
+    form.credentials.base_url = sourceBaseUrl
+  }
+
+  form.platform = source.platform
+  if (sourceBaseUrl && source.platform !== 'grok') {
+    nextTick(() => {
+      if (props.cloneFrom) {
+        apiKeyBaseUrl.value = sourceBaseUrl
+      }
+    })
+  }
+}
+
+// Watchers
 watch(
   () => props.cloneFrom,
   (newSource) => {
     if (props.show && newSource) applyCloneFrom(newSource)
   }
 )
-
-const applyCloneFrom = (source: Account) => {
-  form.name = `${source.name} (Copy)`
-}
 
 // Sync form.type based on accountCategory, addMethod, and platform-specific type
 watch(
@@ -4807,6 +4829,36 @@ const resetForm = () => {
   antigravityMixedChannelConfirmed.value = false
   clearMixedChannelDialog()
 }
+
+watch(
+  () => props.show,
+  (newVal) => {
+    if (newVal) {
+      // Load TLS fingerprint profiles
+      adminAPI.tlsFingerprintProfiles.list()
+        .then(profiles => { tlsFingerprintProfiles.value = profiles.map(p => ({ id: p.id, name: p.name })) })
+        .catch(() => { tlsFingerprintProfiles.value = [] })
+      // Modal opened - fill related models
+      allowedModels.value = [...getModelsByPlatform(form.platform)]
+      // Antigravity: 默认使用映射模式并填充默认映射
+      if (form.platform === 'antigravity') {
+        antigravityModelRestrictionMode.value = 'mapping'
+        fetchAntigravityDefaultMappings().then(mappings => {
+          antigravityModelMappings.value = [...mappings]
+        })
+        antigravityWhitelistModels.value = []
+      } else {
+        antigravityWhitelistModels.value = []
+        antigravityModelMappings.value = []
+        antigravityModelRestrictionMode.value = 'mapping'
+      }
+      if (props.cloneFrom) applyCloneFrom(props.cloneFrom)
+    } else {
+      resetForm()
+    }
+  },
+  { immediate: true }
+)
 
 const handleClose = () => {
   antigravityMixedChannelConfirmed.value = false

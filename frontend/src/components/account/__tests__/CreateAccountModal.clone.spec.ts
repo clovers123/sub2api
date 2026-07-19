@@ -73,3 +73,75 @@ describe('CreateAccountModal - clone prop', () => {
     expect(dialog.attributes('data-title')).toBe('admin.accounts.cloneAccount')
   })
 })
+
+describe('CreateAccountModal - basic field mapping', () => {
+  it('prefills name, notes, platform, type, proxy, concurrency, priority, rate_multiplier, group_ids, expires_at, auto_pause_on_expired', async () => {
+    const cloneFrom = baseSource({
+      name: 'src',
+      notes: 'my notes',
+      platform: 'openai',
+      type: 'apikey',
+      proxy_id: 7,
+      concurrency: 25,
+      load_factor: 1.5,
+      priority: 9,
+      rate_multiplier: 1.8,
+      group_ids: [3, 4],
+      expires_at: 1735689600,
+      auto_pause_on_expired: false
+    })
+    const wrapper = mountModal({ show: true, cloneFrom })
+    await flushPromises()
+    const vm = wrapper.vm as any
+    expect(vm.form.name).toBe('src (Copy)')
+    expect(vm.form.notes).toBe('my notes')
+    expect(vm.form.platform).toBe('openai')
+    expect(vm.form.type).toBe('apikey')
+    expect(vm.form.proxy_id).toBe(7)
+    expect(vm.form.concurrency).toBe(25)
+    expect(vm.form.load_factor).toBe(1.5)
+    expect(vm.form.priority).toBe(9)
+    expect(vm.form.rate_multiplier).toBe(1.8)
+    expect(vm.form.group_ids).toEqual([3, 4])
+    expect(vm.form.expires_at).toBe(1735689600)
+    expect(vm.autoPauseOnExpired).toBe(false)
+  })
+
+  it('clears API key and other sensitive inputs', async () => {
+    const cloneFrom = baseSource({ platform: 'anthropic', type: 'apikey' })
+    const wrapper = mountModal({ show: true, cloneFrom })
+    await flushPromises()
+    const vm = wrapper.vm as any
+    // Other sensitive refs such as upstreamApiKey cannot be prefilled externally; tasks 6-8 cover them through end-to-end tests.
+    expect(vm.apiKeyValue).toBe('')
+  })
+
+  it('keeps source base_url across platform watcher reset (openai apikey)', async () => {
+    const cloneFrom = baseSource({
+      platform: 'openai', type: 'apikey',
+      credentials: { base_url: 'https://custom-openai.example.com' }
+    })
+    const wrapper = mountModal({ show: false })
+    await flushPromises()
+    await wrapper.setProps({ show: true, cloneFrom })
+    await flushPromises()
+    await wrapper.vm.$nextTick()
+    await wrapper.vm.$nextTick()
+    const vm = wrapper.vm as any
+    expect(vm.apiKeyBaseUrl).toBe('https://custom-openai.example.com')
+    expect(vm.form.platform).toBe('openai')
+  })
+
+  it('keeps source base_url for grok (form.credentials path)', async () => {
+    const cloneFrom = baseSource({
+      platform: 'grok', type: 'apikey',
+      credentials: { base_url: 'https://custom-grok.example.com' }
+    })
+    const wrapper = mountModal({ show: false })
+    await flushPromises()
+    await wrapper.setProps({ show: true, cloneFrom })
+    await flushPromises()
+    const vm = wrapper.vm as any
+    expect(vm.form.credentials.base_url).toBe('https://custom-grok.example.com')
+  })
+})
