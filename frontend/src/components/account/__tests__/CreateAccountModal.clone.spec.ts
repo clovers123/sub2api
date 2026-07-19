@@ -145,3 +145,95 @@ describe('CreateAccountModal - basic field mapping', () => {
     expect(vm.form.credentials.base_url).toBe('https://custom-grok.example.com')
   })
 })
+
+describe('CreateAccountModal - non-sensitive credential fields', () => {
+  it('prefills mixed model_mapping without dropping whitelist entries', async () => {
+    const cloneFrom = baseSource({
+      platform: 'openai', type: 'apikey',
+      credentials: { model_mapping: { 'gpt-4': 'gpt-4', 'claude-*': 'claude-sonnet-4' } }
+    })
+    const wrapper = mountModal({ show: false })
+    await flushPromises()
+    await wrapper.setProps({ show: true, cloneFrom })
+    await flushPromises()
+    const vm = wrapper.vm as any
+    expect(vm.modelRestrictionMode).toBe('mapping')
+    expect(vm.allowedModels).toContain('gpt-4')
+    expect(vm.modelMappings.find((m: any) => m.from === 'claude-*' && m.to === 'claude-sonnet-4')).toBeTruthy()
+  })
+
+  it('prefills whitelist-only model_mapping', async () => {
+    const cloneFrom = baseSource({
+      platform: 'openai', type: 'apikey',
+      credentials: { model_mapping: { 'custom-model': 'custom-model' } }
+    })
+    const wrapper = mountModal({ show: false })
+    await flushPromises()
+    const vm = wrapper.vm as any
+    vm.modelRestrictionMode = 'mapping'
+    await wrapper.vm.$nextTick()
+    await wrapper.setProps({ show: true, cloneFrom })
+    await flushPromises()
+    await wrapper.vm.$nextTick()
+    expect(vm.modelRestrictionMode).toBe('whitelist')
+    expect(vm.allowedModels).toEqual(['custom-model'])
+    expect(vm.modelMappings).toEqual([])
+  })
+
+  it('prefills header override rows and enables headerOverrideEnabled', async () => {
+    const cloneFrom = baseSource({
+      credentials: { custom_headers: { 'X-Custom': 'val1', 'X-Other': 'val2' } }
+    })
+    const wrapper = mountModal({ show: false })
+    await flushPromises()
+    await wrapper.setProps({ show: true, cloneFrom })
+    await flushPromises()
+    const vm = wrapper.vm as any
+    expect(vm.headerOverrideEnabled).toBe(true)
+    expect(vm.headerOverrideRows).toEqual([
+      { name: 'X-Custom', value: 'val1' },
+      { name: 'X-Other', value: 'val2' }
+    ])
+  })
+
+  it('prefills OpenAI specific flags', async () => {
+    const cloneFrom = baseSource({
+      platform: 'openai', type: 'apikey',
+      credentials: { openai_ws_mode_v2: 'ctx_pool', codex_cli_only_enabled: true, codex_app_server_only_enabled: true }
+    })
+    const wrapper = mountModal({ show: false })
+    await flushPromises()
+    await wrapper.setProps({ show: true, cloneFrom })
+    await flushPromises()
+    const vm = wrapper.vm as any
+    expect(vm.openaiAPIKeyResponsesWebSocketV2Mode).toBe('ctx_pool')
+    expect(vm.codexCLIOnlyEnabled).toBe(true)
+    expect(vm.codexCLIOnlyAppServerEnabled).toBe(true)
+  })
+
+  it('prefills Anthropic API key auth scheme', async () => {
+    const cloneFrom = baseSource({
+      platform: 'anthropic', type: 'apikey',
+      credentials: { anthropic_api_key_auth_scheme: 'authorization_bearer' }
+    })
+    const wrapper = mountModal({ show: false })
+    await flushPromises()
+    await wrapper.setProps({ show: true, cloneFrom })
+    await flushPromises()
+    const vm = wrapper.vm as any
+    expect(vm.anthropicAPIKeyAuthScheme).toBe('authorization_bearer')
+  })
+
+  it('prefills Antigravity project id', async () => {
+    const cloneFrom = baseSource({
+      platform: 'antigravity', type: 'upstream',
+      credentials: { antigravity_project_id: 'proj-123' }
+    })
+    const wrapper = mountModal({ show: false })
+    await flushPromises()
+    await wrapper.setProps({ show: true, cloneFrom })
+    await flushPromises()
+    const vm = wrapper.vm as any
+    expect(vm.antigravityProjectId).toBe('proj-123')
+  })
+})
