@@ -396,3 +396,90 @@ describe('CreateAccountModal - extra fields', () => {
     expect(vm.anthropicPassthroughEnabled).toBe(true)
   })
 })
+
+describe('CreateAccountModal - state selectors and submission', () => {
+  it('sets accountCategory=apikey for anthropic apikey', async () => {
+    const cloneFrom = baseSource({ platform: 'anthropic', type: 'apikey' })
+    const wrapper = mountModal({ show: false })
+    await flushPromises()
+    await wrapper.setProps({ show: true, cloneFrom })
+    await flushPromises()
+    expect((wrapper.vm as any).accountCategory).toBe('apikey')
+  })
+
+  it('sets accountCategory=bedrock for anthropic bedrock', async () => {
+    const cloneFrom = baseSource({ platform: 'anthropic', type: 'bedrock', extra: { bedrock_auth_mode: 'apikey' } })
+    const wrapper = mountModal({ show: false })
+    await flushPromises()
+    await wrapper.setProps({ show: true, cloneFrom })
+    await flushPromises()
+    const vm = wrapper.vm as any
+    expect(vm.accountCategory).toBe('bedrock')
+    expect(vm.bedrockAuthMode).toBe('apikey')
+  })
+
+  it('sets accountCategory=service_account for service_account', async () => {
+    const cloneFrom = baseSource({ platform: 'gemini', type: 'service_account' })
+    const wrapper = mountModal({ show: false })
+    await flushPromises()
+    await wrapper.setProps({ show: true, cloneFrom })
+    await flushPromises()
+    expect((wrapper.vm as any).accountCategory).toBe('service_account')
+  })
+
+  it('sets antigravityAccountType=upstream for antigravity upstream', async () => {
+    const cloneFrom = baseSource({ platform: 'antigravity', type: 'upstream' })
+    const wrapper = mountModal({ show: false })
+    await flushPromises()
+    await wrapper.setProps({ show: true, cloneFrom })
+    await flushPromises()
+    const vm = wrapper.vm as any
+    expect(vm.antigravityAccountType).toBe('upstream')
+    expect(vm.accountCategory).toBe('apikey')
+  })
+
+  it('regression: opens as fresh new-account modal when cloneFrom is null', async () => {
+    const wrapper = mountModal({ show: true })
+    await flushPromises()
+    const vm = wrapper.vm as any
+    expect(vm.form.name).toBe('')
+    expect(vm.form.platform).toBe('anthropic')
+    expect(vm.apiKeyValue).toBe('')
+    const dialog = wrapper.find('[data-title]')
+    expect(dialog.attributes('data-title')).toBe('admin.accounts.createAccount')
+  })
+
+  it('regression: closing modal and reopening without cloneFrom resets state', async () => {
+    const wrapper = mountModal({ show: true, cloneFrom: baseSource({ name: 'first' }) })
+    await flushPromises()
+    expect((wrapper.vm as any).form.name).toBe('first (Copy)')
+    await wrapper.setProps({ show: false, cloneFrom: null })
+    await flushPromises()
+    await wrapper.setProps({ show: true, cloneFrom: null })
+    await flushPromises()
+    expect((wrapper.vm as any).form.name).toBe('')
+  })
+
+  it('submits via create API with cloneFrom values', async () => {
+    createAccountMock.mockResolvedValue({ id: 999, name: 'src (Copy)' })
+    const cloneFrom = baseSource({
+      name: 'src', platform: 'anthropic', type: 'apikey',
+      concurrency: 15, priority: 3, group_ids: [1, 2]
+    })
+    const wrapper = mountModal({ show: false })
+    await flushPromises()
+    await wrapper.setProps({ show: true, cloneFrom })
+    await flushPromises()
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('new-api-key')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    const payload = createAccountMock.mock.calls[0][0]
+    expect(payload.name).toBe('src (Copy)')
+    expect(payload.platform).toBe('anthropic')
+    expect(payload.type).toBe('apikey')
+    expect(payload.concurrency).toBe(15)
+    expect(payload.priority).toBe(3)
+    expect(payload.group_ids).toEqual([1, 2])
+  })
+})
