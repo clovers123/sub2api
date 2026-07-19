@@ -4600,13 +4600,9 @@ const applyCloneFrom = (source: Account) => {
     // 6.2 model_mapping → allowedModels + modelMappings + mode
     if (modelMapping && typeof modelMapping === 'object') {
       const { allowedModels: parsedAllowed, modelMappings: parsedMappings } = splitModelMappingObject(modelMapping as Record<string, unknown>)
-      if (parsedMappings.length > 0 && parsedAllowed.length > 0) {
-        modelRestrictionMode.value = 'combined'
-      } else if (parsedMappings.length > 0) {
-        modelRestrictionMode.value = 'mapping'
-      } else {
-        modelRestrictionMode.value = 'whitelist'
-      }
+      // 克隆时始终使用 combined 模式，让白名单和映射两个区域都同时可见，
+      // 即使源账号只配了其中一项。这样用户能直观看到哪些数据被克隆。
+      modelRestrictionMode.value = 'combined'
       allowedModels.value = parsedAllowed
       modelMappings.value = parsedMappings
     }
