@@ -237,3 +237,162 @@ describe('CreateAccountModal - non-sensitive credential fields', () => {
     expect(vm.antigravityProjectId).toBe('proj-123')
   })
 })
+
+describe('CreateAccountModal - extra fields', () => {
+  it('prefills quota limits and reset config', async () => {
+    const cloneFrom = baseSource({
+      platform: 'anthropic', type: 'apikey',
+      extra: { quota_limit: 100, quota_daily_limit: 10, quota_weekly_limit: 50,
+               quota_daily_reset_mode: 'fixed', quota_daily_reset_hour: 8,
+               quota_weekly_reset_mode: 'fixed', quota_weekly_reset_day: 1, quota_weekly_reset_hour: 9,
+               quota_reset_timezone: 'Asia/Shanghai' }
+    })
+    const wrapper = mountModal({ show: false })
+    await flushPromises()
+    await wrapper.setProps({ show: true, cloneFrom })
+    await flushPromises()
+    const vm = wrapper.vm as any
+    expect(vm.editQuotaLimit).toBe(100)
+    expect(vm.editQuotaDailyLimit).toBe(10)
+    expect(vm.editQuotaWeeklyLimit).toBe(50)
+    expect(vm.editDailyResetMode).toBe('fixed')
+    expect(vm.editDailyResetHour).toBe(8)
+    expect(vm.editWeeklyResetMode).toBe('fixed')
+    expect(vm.editWeeklyResetDay).toBe(1)
+    expect(vm.editWeeklyResetHour).toBe(9)
+    expect(vm.editResetTimezone).toBe('Asia/Shanghai')
+  })
+
+  it('prefills TLS fingerprint, session masking, cache TTL, custom base URL', async () => {
+    const cloneFrom = baseSource({
+      extra: { enable_tls_fingerprint: true, tls_fingerprint_profile_id: 5,
+               session_id_masking_enabled: true,
+               cache_ttl_override_enabled: true, cache_ttl_override_target: '1h',
+               custom_base_url_enabled: true, custom_base_url: 'https://proxy.example.com' }
+    })
+    const wrapper = mountModal({ show: false })
+    await flushPromises()
+    await wrapper.setProps({ show: true, cloneFrom })
+    await flushPromises()
+    const vm = wrapper.vm as any
+    expect(vm.tlsFingerprintEnabled).toBe(true)
+    expect(vm.tlsFingerprintProfileId).toBe(5)
+    expect(vm.sessionIdMaskingEnabled).toBe(true)
+    expect(vm.cacheTTLOverrideEnabled).toBe(true)
+    expect(vm.cacheTTLOverrideTarget).toBe('1h')
+    expect(vm.customBaseUrlEnabled).toBe(true)
+    expect(vm.customBaseUrl).toBe('https://proxy.example.com')
+  })
+
+  it('prefills RPM limit and queue mode', async () => {
+    const cloneFrom = baseSource({
+      extra: { base_rpm: 60, rpm_strategy: 'sticky_exempt', rpm_sticky_buffer: 5, user_msg_queue_mode: 'serialize' }
+    })
+    const wrapper = mountModal({ show: false })
+    await flushPromises()
+    await wrapper.setProps({ show: true, cloneFrom })
+    await flushPromises()
+    const vm = wrapper.vm as any
+    expect(vm.rpmLimitEnabled).toBe(true)
+    expect(vm.baseRpm).toBe(60)
+    expect(vm.rpmStrategy).toBe('sticky_exempt')
+    expect(vm.rpmStickyBuffer).toBe(5)
+    expect(vm.userMsgQueueMode).toBe('serialize')
+  })
+
+  it('prefills window cost and session limit', async () => {
+    const cloneFrom = baseSource({
+      extra: { window_cost_limit: 5.5, window_cost_sticky_reserve: 0.5,
+               max_sessions: 3, session_idle_timeout_minutes: 15 }
+    })
+    const wrapper = mountModal({ show: false })
+    await flushPromises()
+    await wrapper.setProps({ show: true, cloneFrom })
+    await flushPromises()
+    const vm = wrapper.vm as any
+    expect(vm.windowCostEnabled).toBe(true)
+    expect(vm.windowCostLimit).toBe(5.5)
+    expect(vm.windowCostStickyReserve).toBe(0.5)
+    expect(vm.sessionLimitEnabled).toBe(true)
+    expect(vm.maxSessions).toBe(3)
+    expect(vm.sessionIdleTimeout).toBe(15)
+  })
+
+  it('prefills pool mode and intercept warmup', async () => {
+    const cloneFrom = baseSource({
+      extra: { pool_mode_enabled: true, pool_mode_retry_count: 3, pool_mode_retry_status_codes: [429, 500],
+               intercept_warmup_requests: true }
+    })
+    const wrapper = mountModal({ show: false })
+    await flushPromises()
+    await wrapper.setProps({ show: true, cloneFrom })
+    await flushPromises()
+    const vm = wrapper.vm as any
+    expect(vm.poolModeEnabled).toBe(true)
+    expect(vm.poolModeRetryCount).toBe(3)
+    expect(vm.poolModeRetryStatusCodesInput).toBe('429,500')
+    expect(vm.interceptWarmupRequests).toBe(true)
+  })
+
+  it('prefills custom error codes', async () => {
+    const cloneFrom = baseSource({
+      extra: { custom_error_codes_enabled: true, custom_error_codes: [400, 403] }
+    })
+    const wrapper = mountModal({ show: false })
+    await flushPromises()
+    await wrapper.setProps({ show: true, cloneFrom })
+    await flushPromises()
+    const vm = wrapper.vm as any
+    expect(vm.customErrorCodesEnabled).toBe(true)
+    expect(vm.selectedErrorCodes).toEqual([400, 403])
+  })
+
+  it('prefills OpenAI-specific extra', async () => {
+    const cloneFrom = baseSource({
+      platform: 'openai', type: 'apikey',
+      extra: { openai_passthrough_enabled: true, openai_long_context_billing_enabled: true,
+               openai_compact_mode: 'on', openai_responses_mode: 'responses',
+               openai_endpoint_capabilities: ['chat_completions', 'responses'] }
+    })
+    const wrapper = mountModal({ show: false })
+    await flushPromises()
+    await wrapper.setProps({ show: true, cloneFrom })
+    await flushPromises()
+    const vm = wrapper.vm as any
+    expect(vm.openaiPassthroughEnabled).toBe(true)
+    expect(vm.openAILongContextBillingEnabled).toBe(true)
+    expect(vm.openAICompactMode).toBe('on')
+    expect(vm.openAIResponsesMode).toBe('responses')
+    expect(vm.openAIEndpointCapabilities).toEqual(['chat_completions', 'responses'])
+  })
+
+  it('prefills Antigravity mixed scheduling and overages', async () => {
+    const cloneFrom = baseSource({
+      platform: 'antigravity', type: 'upstream',
+      extra: { antigravity_mixed_scheduling_enabled: true, antigravity_allow_overages: true }
+    })
+    const wrapper = mountModal({ show: false })
+    await flushPromises()
+    await wrapper.setProps({ show: true, cloneFrom })
+    await flushPromises()
+    const vm = wrapper.vm as any
+    expect(vm.mixedScheduling).toBe(true)
+    expect(vm.allowOverages).toBe(true)
+  })
+
+  it('prefills web search and anthropic passthrough', async () => {
+    const cloneFrom = baseSource({
+      platform: 'anthropic', type: 'apikey',
+      extra: { web_search_emulation_mode: 'claude', web_search_global_enabled: true,
+               anthropic_passthrough_enabled: true }
+    })
+    const wrapper = mountModal({ show: false })
+    await flushPromises()
+    await wrapper.setProps({ show: true, cloneFrom })
+    await flushPromises()
+    const vm = wrapper.vm as any
+    expect(vm.webSearchEmulationMode).toBe('claude')
+    expect(vm.webSearchGlobalEnabled).toBe(true)
+    expect(vm.anthropicPassthroughEnabled).toBe(true)
+  })
+})
