@@ -518,6 +518,9 @@ gateway:
   # Allow failover on selected 400 errors (default: off)
   # 允许在特定 400 错误时进行故障转移（默认：关闭）
   failover_on_400: false
+  # Maximum account switches when an upstream request fails
+  # 上游请求失败时允许的最大账号切换次数
+  max_account_switches: 5
   # Scheduling configuration
   # 调度配置
   scheduling:
