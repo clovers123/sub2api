@@ -157,7 +157,7 @@ describe('CreateAccountModal - non-sensitive credential fields', () => {
     await wrapper.setProps({ show: true, cloneFrom })
     await flushPromises()
     const vm = wrapper.vm as any
-    expect(vm.modelRestrictionMode).toBe('mapping')
+    expect(vm.modelRestrictionMode).toBe('combined')
     expect(vm.allowedModels).toContain('gpt-4')
     expect(vm.modelMappings.find((m: any) => m.from === 'claude-*' && m.to === 'claude-sonnet-4')).toBeTruthy()
   })
