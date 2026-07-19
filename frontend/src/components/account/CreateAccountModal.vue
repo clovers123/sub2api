@@ -1,10 +1,13 @@
 <template>
   <BaseDialog
     :show="show"
-    :title="t('admin.accounts.createAccount')"
+    :title="props.cloneFrom ? t('admin.accounts.cloneAccount') : t('admin.accounts.createAccount')"
     width="wide"
     @close="handleClose"
   >
+    <div v-if="props.cloneFrom" class="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-700 dark:border-amber-700/40 dark:bg-amber-900/20 dark:text-amber-300">
+      {{ t('admin.accounts.cloneFromHint', { name: props.cloneFrom.name }) }}
+    </div>
     <!-- Step Indicator for OAuth accounts -->
     <div v-if="isOAuthFlow" class="mb-6 flex items-center justify-center">
       <div class="flex items-center space-x-4">
@@ -3449,7 +3452,9 @@
               ? t('common.next')
               : submitting
                 ? t('admin.accounts.creating')
-                : t('common.create')
+                : props.cloneFrom
+                  ? t('admin.accounts.cloneSubmit')
+                  : t('common.create')
           }}
         </button>
       </div>
@@ -3752,6 +3757,7 @@ import { useGrokOAuth } from '@/composables/useGrokOAuth'
 import type {
   Proxy,
   AdminGroup,
+  Account,
   AccountPlatform,
   AccountType,
   CheckMixedChannelResponse,
@@ -3885,6 +3891,7 @@ interface Props {
   show: boolean
   proxies: Proxy[]
   groups: AdminGroup[]
+  cloneFrom?: Account | null
 }
 
 const props = defineProps<Props>()
@@ -4551,11 +4558,23 @@ watch(
         antigravityModelMappings.value = []
         antigravityModelRestrictionMode.value = 'mapping'
       }
+      if (props.cloneFrom) applyCloneFrom(props.cloneFrom)
     } else {
       resetForm()
     }
   }
 )
+
+watch(
+  () => props.cloneFrom,
+  (newSource) => {
+    if (props.show && newSource) applyCloneFrom(newSource)
+  }
+)
+
+const applyCloneFrom = (source: Account) => {
+  form.name = `${source.name} (Copy)`
+}
 
 // Sync form.type based on accountCategory, addMethod, and platform-specific type
 watch(
