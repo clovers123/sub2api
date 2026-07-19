@@ -4298,6 +4298,89 @@ const applyCloneFrom = (source: Account) => {
     if (typeof creds.antigravity_project_id === 'string') {
       antigravityProjectId.value = creds.antigravity_project_id
     }
+
+    // 6.4 extra 字段
+    const extra = (source.extra ?? {}) as Record<string, unknown>
+
+    if (typeof extra.quota_limit === 'number') editQuotaLimit.value = extra.quota_limit
+    if (typeof extra.quota_daily_limit === 'number') editQuotaDailyLimit.value = extra.quota_daily_limit
+    if (typeof extra.quota_weekly_limit === 'number') editQuotaWeeklyLimit.value = extra.quota_weekly_limit
+    if (extra.quota_daily_reset_mode === 'fixed' || extra.quota_daily_reset_mode === 'rolling') {
+      editDailyResetMode.value = extra.quota_daily_reset_mode
+      if (typeof extra.quota_daily_reset_hour === 'number') editDailyResetHour.value = extra.quota_daily_reset_hour
+    }
+    if (extra.quota_weekly_reset_mode === 'fixed' || extra.quota_weekly_reset_mode === 'rolling') {
+      editWeeklyResetMode.value = extra.quota_weekly_reset_mode
+      if (typeof extra.quota_weekly_reset_day === 'number') editWeeklyResetDay.value = extra.quota_weekly_reset_day
+      if (typeof extra.quota_weekly_reset_hour === 'number') editWeeklyResetHour.value = extra.quota_weekly_reset_hour
+    }
+    if (typeof extra.quota_reset_timezone === 'string') editResetTimezone.value = extra.quota_reset_timezone
+
+    if (extra.enable_tls_fingerprint === true) {
+      tlsFingerprintEnabled.value = true
+      if (typeof extra.tls_fingerprint_profile_id === 'number') tlsFingerprintProfileId.value = extra.tls_fingerprint_profile_id
+    }
+    if (extra.session_id_masking_enabled === true) sessionIdMaskingEnabled.value = true
+    if (extra.cache_ttl_override_enabled === true) {
+      cacheTTLOverrideEnabled.value = true
+      if (typeof extra.cache_ttl_override_target === 'string') cacheTTLOverrideTarget.value = extra.cache_ttl_override_target
+    }
+    if (extra.custom_base_url_enabled === true) {
+      customBaseUrlEnabled.value = true
+      if (typeof extra.custom_base_url === 'string') customBaseUrl.value = extra.custom_base_url
+    }
+
+    if (typeof extra.window_cost_limit === 'number') {
+      windowCostEnabled.value = true
+      windowCostLimit.value = extra.window_cost_limit
+    }
+    if (typeof extra.window_cost_sticky_reserve === 'number') windowCostStickyReserve.value = extra.window_cost_sticky_reserve
+
+    if (typeof extra.max_sessions === 'number') {
+      sessionLimitEnabled.value = true
+      maxSessions.value = extra.max_sessions
+    }
+    if (typeof extra.session_idle_timeout_minutes === 'number') sessionIdleTimeout.value = extra.session_idle_timeout_minutes
+
+    if (typeof extra.base_rpm === 'number') {
+      rpmLimitEnabled.value = true
+      baseRpm.value = extra.base_rpm
+    }
+    if (extra.rpm_strategy === 'sticky_exempt' || extra.rpm_strategy === 'tiered') rpmStrategy.value = extra.rpm_strategy
+    if (typeof extra.rpm_sticky_buffer === 'number') rpmStickyBuffer.value = extra.rpm_sticky_buffer
+    if (typeof extra.user_msg_queue_mode === 'string') userMsgQueueMode.value = extra.user_msg_queue_mode
+
+    if (extra.pool_mode_enabled === true) {
+      poolModeEnabled.value = true
+      if (typeof extra.pool_mode_retry_count === 'number') poolModeRetryCount.value = extra.pool_mode_retry_count
+      if (Array.isArray(extra.pool_mode_retry_status_codes)) {
+        poolModeRetryStatusCodesInput.value = (extra.pool_mode_retry_status_codes as number[]).join(',')
+      }
+    }
+    if (extra.intercept_warmup_requests === true) interceptWarmupRequests.value = true
+
+    if (extra.custom_error_codes_enabled === true) {
+      customErrorCodesEnabled.value = true
+      if (Array.isArray(extra.custom_error_codes)) selectedErrorCodes.value = [...(extra.custom_error_codes as number[])]
+    }
+
+    if (extra.openai_passthrough_enabled === true) openaiPassthroughEnabled.value = true
+    if (extra.openai_long_context_billing_enabled === true) {
+      openAILongContextBillingEnabled.value = true
+      openAILongContextBillingTouched.value = true
+    }
+    if (typeof extra.openai_compact_mode === 'string') openAICompactMode.value = extra.openai_compact_mode as any
+    if (typeof extra.openai_responses_mode === 'string') openAIResponsesMode.value = extra.openai_responses_mode as any
+    if (Array.isArray(extra.openai_endpoint_capabilities)) {
+      openAIEndpointCapabilities.value = [...(extra.openai_endpoint_capabilities as any[])]
+    }
+
+    if (extra.antigravity_mixed_scheduling_enabled === true) mixedScheduling.value = true
+    if (extra.antigravity_allow_overages === true) allowOverages.value = true
+
+    if (typeof extra.web_search_emulation_mode === 'string') webSearchEmulationMode.value = extra.web_search_emulation_mode
+    if (extra.web_search_global_enabled === true) webSearchGlobalEnabled.value = true
+    if (extra.anthropic_passthrough_enabled === true) anthropicPassthroughEnabled.value = true
   })
 }
 
