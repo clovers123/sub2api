@@ -4720,6 +4720,27 @@ const applyCloneFrom = (source: Account) => {
     if (typeof extra.web_search_emulation_mode === 'string') webSearchEmulationMode.value = extra.web_search_emulation_mode
     if (extra.web_search_global_enabled === true) webSearchGlobalEnabled.value = true
     if (extra.anthropic_passthrough_enabled === true) anthropicPassthroughEnabled.value = true
+
+    // 6.5 状态选择器（同步 accountCategory 等确保 type watcher 推出正确的 form.type）
+    const p = source.platform
+    const t = source.type
+    if (p === 'anthropic' && t === 'apikey') {
+      accountCategory.value = 'apikey'
+    } else if (p === 'anthropic' && t === 'bedrock') {
+      accountCategory.value = 'bedrock'
+      if (extra.bedrock_auth_mode === 'apikey' || extra.bedrock_auth_mode === 'sigv4') bedrockAuthMode.value = extra.bedrock_auth_mode
+      if (typeof extra.bedrock_region === 'string') bedrockRegion.value = extra.bedrock_region
+      if (extra.bedrock_force_global === true) bedrockForceGlobal.value = true
+    } else if ((p === 'anthropic' || p === 'gemini') && t === 'service_account') {
+      accountCategory.value = 'service_account'
+    } else if (p === 'openai' && t === 'apikey') {
+      accountCategory.value = 'apikey'
+    } else if (p === 'antigravity' && t === 'upstream') {
+      antigravityAccountType.value = 'upstream'
+      accountCategory.value = 'apikey'
+    } else if (p === 'grok' && t === 'apikey') {
+      accountCategory.value = 'apikey'
+    }
   })
 }
 
