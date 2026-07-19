@@ -3575,6 +3575,7 @@ import {
   getModelsByPlatform,
   commonErrorCodes,
   buildModelMappingObject,
+  splitModelMappingObject,
   fetchAntigravityDefaultMappings,
   isValidWildcardPattern
 } from '@/composables/useModelWhitelist'
@@ -3621,6 +3622,7 @@ import {
   applyHeaderOverride,
   applyInterceptWarmup,
   isHeaderOverrideCapable,
+  splitHeaderOverridesObject,
   validateHeaderOverrideRows,
   type HeaderOverrideRow
 } from '@/components/account/credentialsBuilder'
@@ -4199,6 +4201,7 @@ const canExchangeCode = computed(() => {
 const applyCloneFrom = (source: Account) => {
   const creds = (source.credentials ?? {}) as Record<string, unknown>
   const sourceBaseUrl = typeof creds.base_url === 'string' ? creds.base_url : ''
+  const modelMapping = creds.model_mapping
 
   // 6.1 基础字段
   form.name = `${source.name} (Copy)`
@@ -4249,6 +4252,53 @@ const applyCloneFrom = (source: Account) => {
       }
     })
   }
+
+  // 6.2 非敏感凭证字段（model_mapping / custom_headers / 平台开关 等）—
+  // 这些字段会被 form.platform watcher 重置，所以通过 nextTick 在 watcher 之后回填
+  nextTick(() => {
+    if (!props.cloneFrom) return
+
+    // 6.2 model_mapping → allowedModels + modelMappings + mode
+    if (modelMapping && typeof modelMapping === 'object') {
+      const { allowedModels: parsedAllowed, modelMappings: parsedMappings } = splitModelMappingObject(modelMapping as Record<string, unknown>)
+      if (parsedMappings.length > 0) {
+        modelRestrictionMode.value = 'mapping'
+      } else {
+        modelRestrictionMode.value = 'whitelist'
+      }
+      allowedModels.value = parsedAllowed
+      modelMappings.value = parsedMappings
+    }
+
+    // 6.2 compact_model_mapping (OpenAI)
+    if (creds.compact_model_mapping && typeof creds.compact_model_mapping === 'object') {
+      const { modelMappings: cmMappings } = splitModelMappingObject(creds.compact_model_mapping as Record<string, unknown>)
+      if (cmMappings.length > 0) {
+        openAICompactModelMappings.value = cmMappings
+      }
+    }
+
+    // 6.2 custom_headers → headerOverrideRows + enabled
+    if (creds.custom_headers && typeof creds.custom_headers === 'object') {
+      headerOverrideRows.value = splitHeaderOverridesObject(creds.custom_headers)
+      headerOverrideEnabled.value = headerOverrideRows.value.length > 0
+    }
+
+    // 6.2 OpenAI / Codex / Anthropic 开关
+    if (typeof creds.openai_ws_mode_v2 === 'string') {
+      openaiAPIKeyResponsesWebSocketV2Mode.value = creds.openai_ws_mode_v2 as any
+    }
+    if (creds.codex_cli_only_enabled === true) codexCLIOnlyEnabled.value = true
+    if (creds.codex_app_server_only_enabled === true) codexCLIOnlyAppServerEnabled.value = true
+    if (typeof creds.anthropic_api_key_auth_scheme === 'string') {
+      anthropicAPIKeyAuthScheme.value = creds.anthropic_api_key_auth_scheme as any
+    }
+
+    // 6.2 Antigravity project id
+    if (typeof creds.antigravity_project_id === 'string') {
+      antigravityProjectId.value = creds.antigravity_project_id
+    }
+  })
 }
 
 // Watchers
@@ -4419,7 +4469,7 @@ const handleSelectGeminiOAuthType = (oauthType: 'code_assist' | 'google_one' | '
 watch(
   [modelRestrictionMode, () => form.platform],
   ([newMode]) => {
-    if (newMode === 'whitelist') {
+    if (newMode === 'whitelist' && !props.cloneFrom) {
       allowedModels.value = [...getModelsByPlatform(form.platform)]
     }
   }
