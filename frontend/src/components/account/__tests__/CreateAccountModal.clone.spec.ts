@@ -156,10 +156,36 @@ describe('CreateAccountModal - non-sensitive credential fields', () => {
     await flushPromises()
     await wrapper.setProps({ show: true, cloneFrom })
     await flushPromises()
+    await wrapper.vm.$nextTick()
+    await wrapper.vm.$nextTick()
     const vm = wrapper.vm as any
     expect(vm.modelRestrictionMode).toBe('combined')
     expect(vm.allowedModels).toContain('gpt-4')
     expect(vm.modelMappings.find((m: any) => m.from === 'claude-*' && m.to === 'claude-sonnet-4')).toBeTruthy()
+  })
+
+  it('simulates AccountsView flow: set cloneFrom first, then show', async () => {
+    const cloneFrom = baseSource({
+      platform: 'openai', type: 'apikey',
+      credentials: { model_mapping: { 'gpt-4': 'gpt-4', 'gpt-3.5': 'gpt-4-turbo', 'claude-*': 'claude-sonnet-4' } }
+    })
+    const wrapper = mountModal({ show: false })
+    await flushPromises()
+    // Simulate AccountsView: cloneFrom set first, then show=true (separate reactivity ticks)
+    await wrapper.setProps({ cloneFrom })
+    await flushPromises()
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+    await wrapper.vm.$nextTick()
+    await wrapper.vm.$nextTick()
+    await wrapper.vm.$nextTick()
+    const vm = wrapper.vm as any
+    expect(vm.modelRestrictionMode).toBe('combined')
+    expect(vm.allowedModels).toEqual(['gpt-4'])
+    expect(vm.modelMappings).toEqual([
+      { from: 'gpt-3.5', to: 'gpt-4-turbo' },
+      { from: 'claude-*', to: 'claude-sonnet-4' }
+    ])
   })
 
   it('prefills whitelist-only model_mapping', async () => {
