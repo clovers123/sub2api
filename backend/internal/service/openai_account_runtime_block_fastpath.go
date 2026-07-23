@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"net/http"
@@ -19,6 +20,10 @@ const (
 	openAIStopSchedulingBridgeCooldown    = 2 * time.Minute
 	openAIOAuth429StormWindow             = 10 * time.Second
 	openAIOAuth429StormMaxAccountSwitches = 1
+
+	// nvidiaResourceExhaustedCooldown 是 NVIDIA 免费 API Worker 耗尽后的冷却时长。
+	// 48/48 Worker 饱和度通常是持续性的，2 分钟才足够等待 Worker 池排空。
+	nvidiaResourceExhaustedCooldown = 2 * time.Minute
 )
 
 // OpenAIOAuth429FailoverState tracks the request-local follow-up budget after
@@ -91,6 +96,27 @@ func isOpenAIAccount(account *Account) bool {
 	return account != nil && (account.Platform == PlatformOpenAI || account.Platform == PlatformGrok)
 }
 
+// isNVIDIAResourceExhaustedError 检测 NVIDIA 免费 API 的 Worker 池耗尽错误。
+// NVIDIA 返回类似 "ResourceExhausted: Worker local total request limit reached (48/48)"
+// 的消息，不在 Google RPC 格式内，需要独立匹配。
+func isNVIDIAResourceExhaustedError(statusCode int, body []byte) bool {
+	if statusCode != http.StatusTooManyRequests && statusCode != http.StatusServiceUnavailable {
+		return false
+	}
+	if len(body) == 0 {
+		return false
+	}
+	lower := bytes.ToLower(body)
+	// 匹配两个标尽特征：ResourceExhausted 和 Worker 限制信息
+	if !bytes.Contains(lower, []byte("resourceexhausted")) {
+		return false
+	}
+	if !bytes.Contains(lower, []byte("worker local total request limit")) {
+		return false
+	}
+	return true
+}
+
 // handleOpenAIAccountUpstreamError expects canonicalModel to be the model used
 // for scheduling after applying account mapping exactly once.
 func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte, canonicalModel ...string) bool {
@@ -139,6 +165,20 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	// Team 联动熔断必须先于 model-not-found 与账户级临时不可调度规则的早退。
 	if s.rateLimitService != nil {
 		s.rateLimitService.maybeHandleOpenAITeamLinkedError(stateCtx, account, statusCode, responseBody)
+	}
+
+	// NVIDIA 免费 API 的 Worker 池耗尽 (ResourceExhausted)：强制冷却账号并阻止 failover 扩散。
+	// 如果 temp_unschedulable_rules 已独立匹配，此分支作为补充保障路径，确保账号被立即内存封锁。
+	if account.Type == AccountTypeAPIKey && isNVIDIAResourceExhaustedError(statusCode, responseBody) {
+		slog.Warn("openai_nvidia_resource_exhausted",
+			"account_id", account.ID,
+			"status_code", statusCode,
+		)
+		s.BlockAccountScheduling(account, time.Now().Add(nvidiaResourceExhaustedCooldown), "nvidia_resource_exhausted")
+		if s.rateLimitService != nil {
+			_ = s.rateLimitService.HandleUpstreamError(stateCtx, account, statusCode, headers, responseBody)
+		}
+		return true
 	}
 	stateCtx = withTempUnschedulableModel(stateCtx, canonicalModel)
 	if s.rateLimitService != nil && len(canonicalModel) > 0 && s.rateLimitService.HandleUpstreamModelNotFound(stateCtx, account, canonicalModel[0], statusCode, responseBody) {
