@@ -455,6 +455,18 @@ gateway:
     # Stats cache for free-tier soft gate. Hot path never waits on DB: misses
     # fail open and refresh in the background. Prefer >= 60s in production.
     free_quota_stats_cache_seconds: 60
+
+  # NVIDIA 上游共享 HTTP 客户端开关。
+  # 复用 httpUpstreamService.clients 客户端缓存；启用时使用跨账号共享的 NVIDIA 缓存键，
+  # 关闭时保持现有 per-account transport / cache 行为不变。
+  # NVIDIA shared HTTP client switch: reuses httpUpstreamService.clients cache;
+  # when enabled, a cross-account shared NVIDIA cache key is used; when disabled,
+  # existing per-account transport/cache behavior is preserved (no separate pool).
+  nvidia_shared_connection_pool:
+    enabled: false
+    # 非正值（0 / 负数）只回退到 gateway.idle_conn_timeout_seconds。
+    # Non-positive (0 / negative) values fall back only to gateway.idle_conn_timeout_seconds.
+    idle_conn_timeout_seconds: 600
   # HTTP upstream connection pool settings (HTTP/2 + multi-proxy scenario defaults)
   # HTTP 上游连接池配置（HTTP/2 + 多代理场景默认值）
   # Max idle connections across all hosts

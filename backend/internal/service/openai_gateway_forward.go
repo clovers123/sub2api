@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -1028,6 +1029,32 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 }
 
+const nvidiaAPIHostname string = "integrate.api.nvidia.com"
+
+// chatCompletionsHTTPUpstreamProfile determines the HTTP upstream profile
+// for a Chat Completions outbound request. It checks the feature flag first,
+// then validates account type and URL hosts. Nil account or nil requestURL
+// fall back to OpenAI. OAuth accounts and parse failures also fall back.
+func (s *OpenAIGatewayService) chatCompletionsHTTPUpstreamProfile(
+	account *Account,
+	requestURL *url.URL,
+) HTTPUpstreamProfile {
+	if s.cfg == nil || !s.cfg.Gateway.NvidiaSharedConnectionPool.Enabled {
+		return HTTPUpstreamProfileOpenAI
+	}
+	if account == nil || requestURL == nil || !account.IsOpenAIApiKey() {
+		return HTTPUpstreamProfileOpenAI
+	}
+	baseURL, err := url.Parse(account.GetOpenAIBaseURL())
+	if err != nil {
+		return HTTPUpstreamProfileOpenAI
+	}
+	if baseURL.Hostname() == nvidiaAPIHostname && requestURL.Hostname() == nvidiaAPIHostname {
+		return HTTPUpstreamProfileNVIDIA
+	}
+	return HTTPUpstreamProfileOpenAI
+}
+
 func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token string, isStream bool, promptCacheKey string, isCodexCLI bool) (*http.Request, error) {
 	// Determine target URL based on account type
 	var targetURL string
@@ -1056,7 +1083,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	if err != nil {
 		return nil, err
 	}
-	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
+	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), s.chatCompletionsHTTPUpstreamProfile(account, req.URL)))
 
 	// Build authentication for this request. Agent Identity signs a fresh
 	// assertion here; OAuth/PAT/API-key keep their existing Bearer behavior.
