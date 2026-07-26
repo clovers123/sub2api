@@ -109,7 +109,7 @@ func (s *RateLimitService) nvidiaAdaptiveThrottleEnabled(ctx context.Context, sc
 func (s *RateLimitService) nvidiaThrottleRate(signal nvidiaThrottleSignal, settings *NVIDIAAdaptiveThrottleSettings) NvidiaThrottleRate {
 	switch signal {
 	case nvidiaThrottleSignalSuccess:
-		return NvidiaThrottleRate{ConsecutivePenalty: 1}
+		return NvidiaThrottleRate{ConsecutivePenalty: 1, DecaySpacing: true}
 	case nvidiaThrottleSignalRate:
 		spacing := time.Second + s.nvidiaThrottleJitter(time.Second)
 		if spacing > settings.MaxSpacing {

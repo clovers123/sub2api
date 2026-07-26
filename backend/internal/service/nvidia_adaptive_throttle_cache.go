@@ -14,6 +14,12 @@ type NvidiaThrottleRate struct {
 	ConsecutivePenalty int64 // consecutive success-or-failure counter
 	CapacityPenaltyMs  int64 // 0 or ms to block when capacity is reached
 	CapacityWindowMs   int64 // duration of the capacity window being reported
+
+	// DecaySpacing requests AIMD-style multiplicative decay of the stored
+	// spacing on success: when true and SpacingMs == 0, the script halves the
+	// existing spacing (flooring to 0 below the minimum threshold) instead of
+	// keeping it unchanged, so penalties recover after successful requests.
+	DecaySpacing bool
 }
 
 // NvidiaReserveResult is the result of an atomic Reserve operation.
