@@ -6,7 +6,9 @@ import (
 	"compress/flate"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"strings"
@@ -161,12 +164,15 @@ type httpUpstreamService struct {
 	cfg     *config.Config                  // 全局配置
 	mu      sync.RWMutex                    // 保护 clients map 的读写锁
 	clients map[string]*upstreamClientEntry // 客户端缓存池，key 由隔离策略决定
-	// OpenAI 走 HTTP/HTTPS 代理时的 H2->H1 回退状态（key=标准化 proxyKey）
+	// OpenAI / NVIDIA 走 HTTP/HTTPS 代理时的 H2->H1 回退状态（key=标准化 proxyKey）
 	openAIHTTP2Fallbacks sync.Map
+	// NVIDIA 共享连接池指标收集器（nil 表示未启用）
+	metrics *service.NVIDIASharedConnectionPoolMetrics
 }
 
 // NewHTTPUpstream 创建通用 HTTP 上游服务
-// 使用配置中的连接池参数构建 Transport
+// 使用配置中的连接池参数构建 Transport。
+// 不注入 metrics（向后兼容的公开构造器）。
 //
 // 参数:
 //   - cfg: 全局配置，包含连接池参数和隔离策略
@@ -174,9 +180,16 @@ type httpUpstreamService struct {
 // 返回:
 //   - service.HTTPUpstream 接口实现
 func NewHTTPUpstream(cfg *config.Config) service.HTTPUpstream {
+	return newHTTPUpstream(cfg, nil)
+}
+
+// newHTTPUpstream 内部构造器，支持注入 NVIDIA 共享连接池指标收集器。
+// metrics 为 nil 时行为与 NewHTTPUpstream 一致。
+func newHTTPUpstream(cfg *config.Config, metrics *service.NVIDIASharedConnectionPoolMetrics) *httpUpstreamService {
 	return &httpUpstreamService{
 		cfg:     cfg,
 		clients: make(map[string]*upstreamClientEntry),
+		metrics: metrics,
 	}
 }
 
@@ -206,8 +219,21 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 		profile = service.HTTPUpstreamProfileFromContext(req.Context())
 	}
 
+	// NVIDIA 共享连接池：用 httptrace 连接级指标注入请求上下文。
+	// 在 acquireClientWithProfile 之前做，让 httptrace 从请求开头覆盖 DNS→Connect→TLS→TTFB 全过程。
+	requestURL := (*url.URL)(nil)
+	if req != nil {
+		requestURL = req.URL
+	}
+	if profile == service.HTTPUpstreamProfileNVIDIA && s.metrics != nil {
+		req = s.wrapRequestWithNVIDIAHttptrace(req)
+		if req != nil {
+			requestURL = req.URL
+		}
+	}
+
 	// 获取或创建对应的客户端，并标记请求占用
-	entry, err := s.acquireClientWithProfile(proxyURL, accountID, accountConcurrency, profile)
+	entry, err := s.acquireClientWithProfile(proxyURL, accountID, accountConcurrency, profile, requestURL)
 	if err != nil {
 		return nil, err
 	}
@@ -295,6 +321,96 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	})
 
 	return resp, nil
+}
+
+// wrapRequestWithNVIDIAHttptrace 注入 httptrace.ClientTrace，在具有 NVIDIA 配置文件的请求上
+// 收集连接级指标（DNS、连接、TLS、TTFB、账户切换）。metrics 保证非 nil。
+func (s *httpUpstreamService) wrapRequestWithNVIDIAHttptrace(req *http.Request) *http.Request {
+	if req == nil {
+		return nil
+	}
+	metrics := s.metrics
+	requestStart := time.Now()
+
+	// 使用互斥锁保护 start-time 变量，防止 Happy Eyeballs 等并发连接尝试
+	// 下的数据竞争。各个回调由 HTTP 传输层的不同 goroutine 可能并发调用。
+	var (
+		dnsMu         sync.Mutex
+		connectMu     sync.Mutex
+		tlsMu         sync.Mutex
+		dnsStart      time.Time
+		connectStart  time.Time
+		tlsStart      time.Time
+		wroteRecorded sync.Once
+	)
+	trace := &httptrace.ClientTrace{
+		DNSStart: func(_ httptrace.DNSStartInfo) {
+			dnsMu.Lock()
+			dnsStart = time.Now()
+			dnsMu.Unlock()
+		},
+		DNSDone: func(_ httptrace.DNSDoneInfo) {
+			dnsMu.Lock()
+			start := dnsStart
+			dnsStart = time.Time{}
+			dnsMu.Unlock()
+			if !start.IsZero() {
+				metrics.RecordDNS(time.Since(start))
+			}
+		},
+		ConnectStart: func(_, _ string) {
+			connectMu.Lock()
+			connectStart = time.Now()
+			connectMu.Unlock()
+		},
+		ConnectDone: func(_, _ string, err error) {
+			connectMu.Lock()
+			start := connectStart
+			connectStart = time.Time{}
+			connectMu.Unlock()
+			if !start.IsZero() && err == nil {
+				metrics.RecordConnect(time.Since(start))
+			}
+		},
+		TLSHandshakeStart: func() {
+			tlsMu.Lock()
+			tlsStart = time.Now()
+			tlsMu.Unlock()
+		},
+		TLSHandshakeDone: func(_ tls.ConnectionState, err error) {
+			tlsMu.Lock()
+			start := tlsStart
+			tlsStart = time.Time{}
+			tlsMu.Unlock()
+			if !start.IsZero() && err == nil {
+				metrics.RecordTLSHandshake(time.Since(start))
+			}
+		},
+		WroteRequest: func(info httptrace.WroteRequestInfo) {
+			if info.Err != nil {
+				return
+			}
+			// 307/308 重定向会在同一 trace 下多次触发成功的 WroteRequest；
+			// 指标语义为“选号完成到首次成功写出请求”，仅记录第一次。
+			wroteRecorded.Do(func() {
+				if startedAt, ok := service.NVIDIAAccountSwitchStartedAt(req.Context()); ok {
+					metrics.RecordAccountSwitchToRequestWritten(time.Since(startedAt))
+				}
+			})
+		},
+		GotFirstResponseByte: func() {
+			metrics.RecordTTFB(time.Since(requestStart))
+		},
+		GotConn: func(info httptrace.GotConnInfo) {
+			if info.Reused {
+				metrics.RecordConnectionReuse(true)
+			} else {
+				metrics.RecordConnectionReuse(false)
+			}
+		},
+	}
+	ctx := httptrace.WithClientTrace(req.Context(), trace)
+	return req.WithContext(ctx)
 }
 
 func httpClientForUpstreamRequest(client *http.Client, req *http.Request) *http.Client {
@@ -614,12 +730,13 @@ func (s *httpUpstreamService) redirectChecker(req *http.Request, via []*http.Req
 // acquireClient 获取或创建客户端，并标记为进行中请求
 // 用于请求路径，避免在获取后被淘汰
 func (s *httpUpstreamService) acquireClient(proxyURL string, accountID int64, accountConcurrency int) (*upstreamClientEntry, error) {
-	return s.acquireClientWithProfile(proxyURL, accountID, accountConcurrency, service.HTTPUpstreamProfileDefault)
+	return s.acquireClientWithProfile(proxyURL, accountID, accountConcurrency, service.HTTPUpstreamProfileDefault, nil)
 }
 
 // acquireClientWithProfile 获取或创建客户端，并按请求 profile 选择协议策略。
-func (s *httpUpstreamService) acquireClientWithProfile(proxyURL string, accountID int64, accountConcurrency int, profile service.HTTPUpstreamProfile) (*upstreamClientEntry, error) {
-	return s.getClientEntry(proxyURL, accountID, accountConcurrency, profile, true, true)
+// requestURL 可选参数，NVIDIA 共享连接池使用主机/端口构建缓存键；其他 profile 传 nil。
+func (s *httpUpstreamService) acquireClientWithProfile(proxyURL string, accountID int64, accountConcurrency int, profile service.HTTPUpstreamProfile, requestURL *url.URL) (*upstreamClientEntry, error) {
+	return s.getClientEntry(proxyURL, accountID, accountConcurrency, profile, true, true, requestURL)
 }
 
 // getOrCreateClient 获取或创建客户端
@@ -638,13 +755,14 @@ func (s *httpUpstreamService) acquireClientWithProfile(proxyURL string, accountI
 //   - account: 按账户隔离，同一账户共享客户端（代理变更时重建）
 //   - account_proxy: 按账户+代理组合隔离，最细粒度
 func (s *httpUpstreamService) getOrCreateClient(proxyURL string, accountID int64, accountConcurrency int) (*upstreamClientEntry, error) {
-	return s.getClientEntry(proxyURL, accountID, accountConcurrency, service.HTTPUpstreamProfileDefault, false, false)
+	return s.getClientEntry(proxyURL, accountID, accountConcurrency, service.HTTPUpstreamProfileDefault, false, false, nil)
 }
 
 // getClientEntry 获取或创建客户端条目
 // markInFlight=true 时会标记进行中请求，用于请求路径防止被淘汰
 // enforceLimit=true 时会限制客户端数量，超限且无法淘汰时返回错误
-func (s *httpUpstreamService) getClientEntry(proxyURL string, accountID int64, accountConcurrency int, profile service.HTTPUpstreamProfile, markInFlight bool, enforceLimit bool) (*upstreamClientEntry, error) {
+// requestURL 可选参数，NVIDIA 共享连接池使用主机/端口构建缓存键；其他 profile 传 nil。
+func (s *httpUpstreamService) getClientEntry(proxyURL string, accountID int64, accountConcurrency int, profile service.HTTPUpstreamProfile, markInFlight bool, enforceLimit bool, requestURL *url.URL) (*upstreamClientEntry, error) {
 	// 获取隔离模式
 	isolation := s.getIsolationMode()
 	// 标准化代理 URL 并解析
@@ -652,12 +770,22 @@ func (s *httpUpstreamService) getClientEntry(proxyURL string, accountID int64, a
 	if err != nil {
 		return nil, err
 	}
-	// 根据请求 profile（例如 OpenAI）选择协议模式
+	// 根据请求 profile（例如 OpenAI/NVIDIA）选择协议模式
 	protocolMode := s.resolveProtocolMode(profile, proxyKey, parsedProxy)
 	settings := s.resolvePoolSettings(isolation, accountConcurrency)
 	settings = s.applyProfilePoolSettings(settings, profile)
-	// 构建缓存键（根据隔离策略不同）
-	cacheKey := buildCacheKey(isolation, proxyKey, accountID, protocolMode)
+
+	var cacheKey string
+	if profile == service.HTTPUpstreamProfileNVIDIA {
+		// NVIDIA 共享连接池：使用请求 URL 主机/端口构建跨账号共享缓存键
+		cacheKey, err = buildNVIDIASharedConnectionPoolCacheKey(requestURL, proxyKey, protocolMode)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// 其他 profile：使用隔离策略构建 per-account 缓存键
+		cacheKey = buildCacheKey(isolation, proxyKey, accountID, protocolMode)
+	}
 	// 构建连接池配置键（用于检测配置变更）
 	poolKey := buildPoolKey(settings, protocolMode)
 
@@ -685,6 +813,7 @@ func (s *httpUpstreamService) getClientEntry(proxyURL string, accountID int64, a
 				atomic.AddInt64(&entry.inFlight, 1)
 			}
 			s.mu.Unlock()
+			slog.Debug("tls_fingerprint_reusing_client", "account_id", accountID, "cache_key", cacheKey)
 			return entry, nil
 		}
 		s.removeClientLocked(cacheKey, entry)
@@ -901,7 +1030,8 @@ func (s *httpUpstreamService) resolvePoolSettings(isolation string, accountConcu
 
 func (s *httpUpstreamService) applyProfilePoolSettings(settings poolSettings, profile service.HTTPUpstreamProfile) poolSettings {
 	switch profile {
-	case service.HTTPUpstreamProfileOpenAI:
+	case service.HTTPUpstreamProfileOpenAI, service.HTTPUpstreamProfileNVIDIA:
+		// OpenAI and NVIDIA use the dedicated response-header timeout.
 		settings.responseHeaderTimeout = 0
 		if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIResponseHeaderTimeout > 0 {
 			settings.responseHeaderTimeout = time.Duration(s.cfg.Gateway.OpenAIResponseHeaderTimeout) * time.Second
@@ -914,6 +1044,22 @@ func (s *httpUpstreamService) applyProfilePoolSettings(settings poolSettings, pr
 		if s != nil && s.cfg != nil {
 			settings.responseHeaderTimeout = time.Duration(s.cfg.Gateway.GrokResponseHeaderTimeout) * time.Second
 		}
+	}
+
+	if profile != service.HTTPUpstreamProfileNVIDIA {
+		return settings
+	}
+
+	// NVIDIA shared connection pool: do not trim the pool by a single account's
+	// concurrency; restore global defaults so the pool remains shared by accounts.
+	defaults := defaultPoolSettings(s.cfg)
+	settings.maxIdleConns = defaults.maxIdleConns
+	settings.maxIdleConnsPerHost = defaults.maxIdleConnsPerHost
+	settings.maxConnsPerHost = defaults.maxConnsPerHost
+
+	// NVIDIA-specific idle connection timeout override (positive values only).
+	if s != nil && s.cfg != nil && s.cfg.Gateway.NvidiaSharedConnectionPool.IdleConnTimeoutSeconds > 0 {
+		settings.idleConnTimeout = time.Duration(s.cfg.Gateway.NvidiaSharedConnectionPool.IdleConnTimeoutSeconds) * time.Second
 	}
 	return settings
 }
@@ -965,6 +1111,62 @@ func buildCacheKey(isolation, proxyKey string, accountID int64, protocolMode str
 	return base
 }
 
+// buildNVIDIASharedConnectionPoolCacheKey 构建 NVIDIA 共享连接池缓存键。
+// 格式：nvidia|scheme:<scheme>|host:<host:port>|proxy:<sha256(proxyKey)>|proto:<mode>
+// 所有账号共享同一 host:port + proxy + protocol 的连接池。
+// IPv6 地址通过 net.JoinHostPort 正确处理方括号包裹。
+//
+// 缓存键不包含任何凭据信息：proxy 字段始终是 SHA256 哈希值。
+func buildNVIDIASharedConnectionPoolCacheKey(requestURL *url.URL, proxyKey string, protocolMode string) (string, error) {
+	if requestURL == nil {
+		return "", errors.New("nvidia shared pool cache key: request URL is nil")
+	}
+	scheme := strings.ToLower(requestURL.Scheme)
+	hostname := strings.ToLower(requestURL.Hostname())
+	port := requestURL.Port()
+	if port == "" {
+		switch scheme {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		}
+	}
+	host := net.JoinHostPort(hostname, port)
+	proxyHash := sha256.Sum256([]byte(proxyKey))
+	cacheKey := fmt.Sprintf("nvidia|scheme:%s|host:%s|proxy:%s|proto:%s",
+		scheme, host, hex.EncodeToString(proxyHash[:]), protocolMode)
+	return cacheKey, nil
+}
+
+// sanitizeProxyKeyForLog 从代理键中提取 scheme 用于日志，避免泄露凭据。
+// 直连或无代理时返回 "direct"。
+func sanitizeProxyKeyForLog(proxyKey string) string {
+	if proxyKey == "" || proxyKey == directProxyKey {
+		return "direct"
+	}
+	if strings.HasPrefix(proxyKey, "http://") {
+		return "http"
+	}
+	if strings.HasPrefix(proxyKey, "https://") {
+		return "https"
+	}
+	if strings.HasPrefix(proxyKey, "socks5://") || strings.HasPrefix(proxyKey, "socks5h://") {
+		return "socks5"
+	}
+	// 未知 scheme 时只返回 scheme 部分，避免泄露地址
+	if before, _, ok := strings.Cut(proxyKey, "://"); ok {
+		return before
+	}
+	return "unknown"
+}
+
+// isOpenAITransportProfile 判断 profile 是否属于需要特殊传输策略的 AI 平台。
+// OpenAI 和 NVIDIA 共享 HTTP/2、PING 健康探测、回退逻辑等传输策略。
+func isOpenAITransportProfile(profile service.HTTPUpstreamProfile) bool {
+	return profile == service.HTTPUpstreamProfileOpenAI || profile == service.HTTPUpstreamProfileNVIDIA
+}
+
 func (s *httpUpstreamService) resolveOpenAIHTTP2Settings() openAIHTTP2Settings {
 	settings := openAIHTTP2Settings{
 		enabled:                   false,
@@ -992,10 +1194,14 @@ func (s *httpUpstreamService) resolveOpenAIHTTP2Settings() openAIHTTP2Settings {
 }
 
 func (s *httpUpstreamService) resolveProtocolMode(profile service.HTTPUpstreamProfile, proxyKey string, parsedProxy *url.URL) string {
+<<<<<<< HEAD
 	if profile == service.HTTPUpstreamProfileGrok {
 		return upstreamProtocolModeGrok
 	}
 	if profile != service.HTTPUpstreamProfileOpenAI {
+=======
+	if !isOpenAITransportProfile(profile) {
+>>>>>>> 221791389 (feat(gateway): NVIDIA API Key 跨账号共享连接池)
 		return upstreamProtocolModeDefault
 	}
 	settings := s.resolveOpenAIHTTP2Settings()
@@ -1100,7 +1306,7 @@ func isUpstreamTimeoutError(err error) bool {
 }
 
 func (s *httpUpstreamService) recordOpenAIHTTP2Failure(profile service.HTTPUpstreamProfile, protocolMode, proxyKey string, err error) {
-	if profile != service.HTTPUpstreamProfileOpenAI || protocolMode != upstreamProtocolModeOpenAIH2 {
+	if !isOpenAITransportProfile(profile) || protocolMode != upstreamProtocolModeOpenAIH2 {
 		return
 	}
 	settings := s.resolveOpenAIHTTP2Settings()
@@ -1113,14 +1319,15 @@ func (s *httpUpstreamService) recordOpenAIHTTP2Failure(profile service.HTTPUpstr
 	state := s.getOrCreateOpenAIHTTP2FallbackState(proxyKey)
 	activated, until := state.recordFailure(time.Now(), settings.fallbackErrorThreshold, settings.fallbackWindow, settings.fallbackTTL)
 	if activated {
+		// 仅记录 proxy_scheme 和 fallback_until，不输出原始代理 URL 或哈希。
 		slog.Warn("openai_http2_proxy_fallback_activated",
-			"proxy", proxyKey,
+			"proxy_scheme", sanitizeProxyKeyForLog(proxyKey),
 			"fallback_until", until.Format(time.RFC3339))
 	}
 }
 
 func (s *httpUpstreamService) recordOpenAIHTTP2Success(profile service.HTTPUpstreamProfile, protocolMode, proxyKey string) {
-	if profile != service.HTTPUpstreamProfileOpenAI || protocolMode != upstreamProtocolModeOpenAIH2 {
+	if !isOpenAITransportProfile(profile) || protocolMode != upstreamProtocolModeOpenAIH2 {
 		return
 	}
 	if !isHTTPProxyKey(proxyKey) {

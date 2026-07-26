@@ -38,6 +38,12 @@ func ProvidePricingRemoteClient(cfg *config.Config) service.PricingRemoteClient 
 	return NewPricingRemoteClient(cfg.Update.ProxyURL, cfg.Security.ProxyFallback.AllowDirectOnError)
 }
 
+// ProvideHTTPUpstream is a Wire-friendly constructor that injects the
+// NVIDIA shared connection pool metrics into the HTTP upstream service.
+func ProvideHTTPUpstream(cfg *config.Config, metrics *service.NVIDIASharedConnectionPoolMetrics) service.HTTPUpstream {
+	return newHTTPUpstream(cfg, metrics)
+}
+
 // ProvideSessionLimitCache 创建会话限制缓存
 // 用于 Anthropic OAuth/SetupToken 账号的并发会话数量控制
 func ProvideSessionLimitCache(rdb *redis.Client, cfg *config.Config) service.SessionLimitCache {
@@ -159,7 +165,7 @@ var ProviderSet = wire.NewSet(
 	NewProxyExitInfoProber,
 	NewClaudeUsageFetcher,
 	NewClaudeOAuthClient,
-	NewHTTPUpstream,
+	ProvideHTTPUpstream,
 	NewOpenAIOAuthClient,
 	NewGrokOAuthClient,
 	NewGeminiOAuthClient,

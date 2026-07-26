@@ -14,7 +14,8 @@ import (
 )
 
 type OpsHandler struct {
-	opsService *service.OpsService
+	opsService                        *service.OpsService
+	nvidiaSharedConnectionPoolMetrics *service.NVIDIASharedConnectionPoolMetrics
 }
 
 // GetErrorLogByID returns ops error log detail.
@@ -70,6 +71,18 @@ func parseOpsViewParam(c *gin.Context) string {
 
 func NewOpsHandler(opsService *service.OpsService) *OpsHandler {
 	return &OpsHandler{opsService: opsService}
+}
+
+// ProvideOpsHandler is a Wire-friendly constructor that also injects the
+// NVIDIA shared connection pool metrics collector.
+func ProvideOpsHandler(
+	opsService *service.OpsService,
+	metrics *service.NVIDIASharedConnectionPoolMetrics,
+) *OpsHandler {
+	return &OpsHandler{
+		opsService:                        opsService,
+		nvidiaSharedConnectionPoolMetrics: metrics,
+	}
 }
 
 // GetErrorLogs lists ops error logs.

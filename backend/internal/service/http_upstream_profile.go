@@ -1,6 +1,9 @@
 package service
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // HTTPUpstreamProfile marks HTTP upstream requests that need provider-specific
 // transport policy.
@@ -10,10 +13,12 @@ const (
 	HTTPUpstreamProfileDefault HTTPUpstreamProfile = ""
 	HTTPUpstreamProfileOpenAI  HTTPUpstreamProfile = "openai"
 	HTTPUpstreamProfileGrok    HTTPUpstreamProfile = "grok"
+	HTTPUpstreamProfileNVIDIA  HTTPUpstreamProfile = "nvidia"
 )
 
 type httpUpstreamProfileContextKey struct{}
 type httpUpstreamDisableRedirectsContextKey struct{}
+type httpUpstreamNvidiaAccountSwitchStartedAtContextKey struct{}
 
 // WithHTTPUpstreamProfile injects an upstream transport profile into ctx.
 func WithHTTPUpstreamProfile(ctx context.Context, profile HTTPUpstreamProfile) context.Context {
@@ -36,7 +41,7 @@ func HTTPUpstreamProfileFromContext(ctx context.Context) HTTPUpstreamProfile {
 		return HTTPUpstreamProfileDefault
 	}
 	switch profile {
-	case HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileGrok:
+	case HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileGrok, HTTPUpstreamProfileNVIDIA:
 		return profile
 	default:
 		return HTTPUpstreamProfileDefault
@@ -54,4 +59,36 @@ func WithHTTPUpstreamRedirectsDisabled(ctx context.Context) context.Context {
 
 func HTTPUpstreamRedirectsDisabled(ctx context.Context) bool {
 	return ctx != nil && ctx.Value(httpUpstreamDisableRedirectsContextKey{}) == true
+}
+
+// WithNVIDIAAccountSwitchStartedAt records the timestamp captured immediately
+// after a replacement NVIDIA account is successfully selected. The caller
+// stores startedAt at that selection point; downstream code uses it to measure
+// the span from replacement-selected to the first successful http.Client
+// WroteRequest. It is not stamped at failure detection or switch decision.
+// Zero values are not retained.
+func WithNVIDIAAccountSwitchStartedAt(ctx context.Context, startedAt time.Time) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if startedAt.IsZero() {
+		return ctx
+	}
+	return context.WithValue(ctx, httpUpstreamNvidiaAccountSwitchStartedAtContextKey{}, startedAt)
+}
+
+// NVIDIAAccountSwitchStartedAt returns the timestamp captured at
+// replacement-selected time and whether it is present. The span from this
+// timestamp to the first successful WroteRequest measures replacement-account
+// reuse latency; absence is a signal that no replacement occurred for this
+// request and the value must not be used as a baseline.
+func NVIDIAAccountSwitchStartedAt(ctx context.Context) (time.Time, bool) {
+	if ctx == nil {
+		return time.Time{}, false
+	}
+	startedAt, ok := ctx.Value(httpUpstreamNvidiaAccountSwitchStartedAtContextKey{}).(time.Time)
+	if !ok || startedAt.IsZero() {
+		return time.Time{}, false
+	}
+	return startedAt, true
 }

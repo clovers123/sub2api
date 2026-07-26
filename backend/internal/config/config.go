@@ -1012,6 +1012,12 @@ type GatewayConfig struct {
 	OpenAIHTTP2 GatewayOpenAIHTTP2Config `mapstructure:"openai_http2"`
 	// OpenAIProxyStreamCircuit: Responses SSE 代理断流熔断策略。
 	OpenAIProxyStreamCircuit GatewayOpenAIProxyStreamCircuitConfig `mapstructure:"openai_proxy_stream_circuit"`
+	// NvidiaSharedConnectionPool: NVIDIA 上游共享 HTTP 客户端开关。
+	// 复用 httpUpstreamService.clients 客户端缓存：Enabled=true 时使用跨账号共享的 NVIDIA 缓存键，
+	// 同时使用本结构中的 IdleConnTimeoutSeconds 作为该共享客户端的空闲连接超时；
+	// Enabled=false 时保持现有的 per-account transport / cache 行为不变。
+	// 非正 IdleConnTimeoutSeconds（0 / 负数）只回退到 gateway.idle_conn_timeout_seconds。
+	NvidiaSharedConnectionPool GatewayNvidiaSharedConnectionPoolConfig `mapstructure:"nvidia_shared_connection_pool"`
 	// ImageConcurrency: 图片生成独立并发限制配置（默认关闭）
 	ImageConcurrency ImageConcurrencyConfig `mapstructure:"image_concurrency"`
 
@@ -1159,6 +1165,18 @@ type GatewayOpenAIHTTP2Config struct {
 	FallbackWindowSeconds int `mapstructure:"fallback_window_seconds"`
 	// FallbackTTLSeconds: 触发后回退 HTTP/1.1 的持续时间（秒）
 	FallbackTTLSeconds int `mapstructure:"fallback_ttl_seconds"`
+}
+
+// GatewayNvidiaSharedConnectionPoolConfig NVIDIA 上游共享 HTTP 客户端开关。
+// 复用 httpUpstreamService.clients 客户端缓存；本配置只控制是否启用跨账号共享 NVIDIA 缓存键
+// 以及该共享客户端使用的空闲连接超时。
+type GatewayNvidiaSharedConnectionPoolConfig struct {
+	// Enabled: 是否为 NVIDIA 上游启用跨账号共享的 HTTP 客户端缓存键。
+	// false 时保持现有 per-account transport / cache 行为，不创建额外池。
+	Enabled bool `mapstructure:"enabled"`
+	// IdleConnTimeoutSeconds: 共享 NVIDIA 客户端的空闲连接超时（秒）。
+	// 非正值（0 / 负数）只回退到 gateway.idle_conn_timeout_seconds。
+	IdleConnTimeoutSeconds int `mapstructure:"idle_conn_timeout_seconds"`
 }
 
 // GatewayOpenAIProxyStreamCircuitConfig controls the bounded, in-process
@@ -2473,6 +2491,10 @@ func setDefaults() {
 	viper.SetDefault("gateway.idle_conn_timeout_seconds", 90) // 空闲连接超时（秒）
 	viper.SetDefault("gateway.max_upstream_clients", 5000)
 	viper.SetDefault("gateway.client_idle_ttl_seconds", 900)
+	// NVIDIA 上游共享 HTTP 客户端开关：默认关闭，不创建额外的连接池；
+	// 非正 idle_conn_timeout_seconds 只回退到 gateway.idle_conn_timeout_seconds。
+	viper.SetDefault("gateway.nvidia_shared_connection_pool.enabled", false)
+	viper.SetDefault("gateway.nvidia_shared_connection_pool.idle_conn_timeout_seconds", 600)
 	viper.SetDefault("gateway.concurrency_slot_ttl_minutes", 30) // 并发槽位过期时间（支持超长请求）
 	viper.SetDefault("gateway.stream_data_interval_timeout", 180)
 	viper.SetDefault("gateway.stream_keepalive_interval", 10)
