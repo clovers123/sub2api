@@ -1182,3 +1182,84 @@ func mergePlatformQuotaDefaults(dst, src *DefaultPlatformQuotaSetting) {
 		dst.MonthlyLimitUSD = src.MonthlyLimitUSD
 	}
 }
+
+// NVIDIA 自适应节流配置边界常量。集中维护以便与前端 / 文档对齐。
+const (
+	nvidiaAdaptiveThrottleStateTTLMinutesMin   = 1
+	nvidiaAdaptiveThrottleStateTTLMinutesMax   = 1440
+	nvidiaAdaptiveThrottleMaxSpacingSecondsMin = 1
+	nvidiaAdaptiveThrottleMaxSpacingSecondsMax = 300
+	nvidiaAdaptiveThrottleShortWaitMsMin       = 0
+	nvidiaAdaptiveThrottleShortWaitMsMax       = 10000
+)
+
+// GetNVIDIAAdaptiveThrottleSettings 读取 NVIDIA 自适应节流运行时配置（typed）。
+//
+// 实现要点：
+//   - 单次 GetMultiple 批量读 4 个 setting key，减少 DB 往返。
+//   - 字段级 fallback：任一字段缺失 / 格式非法 / 越界 → 单独回退到默认值；
+//     其他字段不受影响，避免 "bad write" 牵连整个对象。
+//   - 越界一律回退默认值（与 parseSettings / buildSystemSettingsUpdates 一致）；
+//     ShortWait=0 合法（表示关闭短等待），不在回退之列。
+//   - Enabled 仅在显式 "true" 时开启；其余一切值（缺失、空串、"false"、"yes" 等）回退默认 false。
+//   - DB 错误：返回 (defaults, error) 让调用方决定降级策略；nil error + defaults = 全 fallback。
+func (s *SettingService) GetNVIDIAAdaptiveThrottleSettings(ctx context.Context) (*NVIDIAAdaptiveThrottleSettings, error) {
+	def := DefaultNVIDIAAdaptiveThrottleSettings()
+	if s == nil || s.settingRepo == nil {
+		return def, nil
+	}
+
+	values, err := s.settingRepo.GetMultiple(ctx, []string{
+		SettingKeyNVIDIAAdaptiveThrottleEnabled,
+		SettingKeyNVIDIAAdaptiveThrottleStateTTLMinutes,
+		SettingKeyNVIDIAAdaptiveThrottleMaxSpacingSeconds,
+		SettingKeyNVIDIAAdaptiveThrottleShortWaitMs,
+	})
+	if err != nil {
+		if errors.Is(err, ErrSettingNotFound) {
+			return def, nil
+		}
+		return def, fmt.Errorf("get nvidia adaptive throttle settings: %w", err)
+	}
+
+	result := &NVIDIAAdaptiveThrottleSettings{
+		Enabled:    def.Enabled,
+		StateTTL:   def.StateTTL,
+		MaxSpacing: def.MaxSpacing,
+		ShortWait:  def.ShortWait,
+	}
+
+	// Enabled: 仅 "true" 算开启；其它任何值（含缺失 / 非法 / 空）回退 false。
+	if raw, ok := values[SettingKeyNVIDIAAdaptiveThrottleEnabled]; ok && strings.TrimSpace(raw) == "true" {
+		result.Enabled = true
+	}
+
+	// StateTTL: 合法且在 [1,1440] 内则使用，否则保持默认 30 分钟。
+	if raw, ok := values[SettingKeyNVIDIAAdaptiveThrottleStateTTLMinutes]; ok {
+		if v, parseErr := strconv.Atoi(strings.TrimSpace(raw)); parseErr == nil &&
+			v >= nvidiaAdaptiveThrottleStateTTLMinutesMin &&
+			v <= nvidiaAdaptiveThrottleStateTTLMinutesMax {
+			result.StateTTL = time.Duration(v) * time.Minute
+		}
+	}
+
+	// MaxSpacing: 合法且在 [1,300] 内则使用，否则保持默认 30 秒。
+	if raw, ok := values[SettingKeyNVIDIAAdaptiveThrottleMaxSpacingSeconds]; ok {
+		if v, parseErr := strconv.Atoi(strings.TrimSpace(raw)); parseErr == nil &&
+			v >= nvidiaAdaptiveThrottleMaxSpacingSecondsMin &&
+			v <= nvidiaAdaptiveThrottleMaxSpacingSecondsMax {
+			result.MaxSpacing = time.Duration(v) * time.Second
+		}
+	}
+
+	// ShortWait: 合法且在 [0,10000] 内则使用（0 表示关闭短等待），否则回退默认 2000ms。
+	if raw, ok := values[SettingKeyNVIDIAAdaptiveThrottleShortWaitMs]; ok {
+		if v, parseErr := strconv.Atoi(strings.TrimSpace(raw)); parseErr == nil &&
+			v >= nvidiaAdaptiveThrottleShortWaitMsMin &&
+			v <= nvidiaAdaptiveThrottleShortWaitMsMax {
+			result.ShortWait = time.Duration(v) * time.Millisecond
+		}
+	}
+
+	return result, nil
+}

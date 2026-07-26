@@ -342,6 +342,19 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		}
 	}
 
+	// Success path: record a clean outcome to the NVIDIA adaptive throttle so the
+	// next Reserve window can widen again.
+	if handleErr == nil && result != nil && s.rateLimitService != nil {
+		update := NvidiaThrottleUpdate{
+			Scope: NVIDIAThrottleScope{
+				AccountID:      account.ID,
+				CanonicalModel: upstreamModel,
+			},
+			StatusCode: http.StatusOK,
+		}
+		_ = s.rateLimitService.RecordNVIDIAAdaptiveThrottleOutcome(ctx, update)
+	}
+
 	return result, handleErr
 }
 

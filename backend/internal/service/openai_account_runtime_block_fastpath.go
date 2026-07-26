@@ -99,6 +99,25 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 		return false
 	}
 
+	// NVIDIA 自适应节流：在进入旧有的 isNVIDIAResourceExhaustedError 全账户分支之前，
+	// 将上游结果记录到自适应节流缓存中。命中被处理的信号（429 / 503 capacity）时，
+	// 立即判定 shouldDisable=true 并提前返回，不再执行下方的全账户封锁策略。
+	if s.rateLimitService != nil {
+		update := NvidiaThrottleUpdate{
+			Scope: NVIDIAThrottleScope{
+				AccountID:      account.ID,
+				CanonicalModel: firstCanonical(canonicalModel),
+			},
+			StatusCode:   statusCode,
+			ResponseBody: responseBody,
+		}
+		if handled := s.rateLimitService.RecordNVIDIAAdaptiveThrottleOutcome(stateCtx, update); handled {
+			if statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable {
+				return true
+			}
+		}
+	}
+
 	// NVIDIA 免费 API 的 Worker 池耗尽 (ResourceExhausted)：强制冷却账号并阻止 failover 扩散。
 	// 如果 temp_unschedulable_rules 已独立匹配，此分支作为补充保障路径，确保账号被立即内存封锁。
 	if account.Type == AccountTypeAPIKey && isNVIDIAResourceExhaustedError(statusCode, responseBody) {
@@ -297,6 +316,13 @@ func (s *OpenAIGatewayService) getOpenAIAccountModelTransientState() *openAIAcco
 		}
 	})
 	return s.openaiModelTransient
+}
+
+func firstCanonical(canonicalModel []string) string {
+	if len(canonicalModel) > 0 {
+		return canonicalModel[0]
+	}
+	return ""
 }
 
 func canonicalOpenAIAccountSchedulingModel(account *Account, requestedModel string) string {

@@ -20,18 +20,23 @@ import (
 
 // RateLimitService 处理限流和过载状态管理
 type RateLimitService struct {
-	accountRepo           AccountRepository
-	usageRepo             UsageLogRepository
-	cfg                   *config.Config
-	geminiQuotaService    *GeminiQuotaService
-	tempUnschedCache      TempUnschedCache
-	timeoutCounterCache   TimeoutCounterCache
-	openAI403CounterCache OpenAI403CounterCache
-	settingService        *SettingService
-	tokenCacheInvalidator TokenCacheInvalidator
-	runtimeBlocker        AccountRuntimeBlocker
-	usageCacheMu          sync.RWMutex
-	usageCache            map[int64]*geminiUsageCacheEntry
+	accountRepo                 AccountRepository
+	usageRepo                   UsageLogRepository
+	cfg                         *config.Config
+	geminiQuotaService          *GeminiQuotaService
+	tempUnschedCache            TempUnschedCache
+	timeoutCounterCache         TimeoutCounterCache
+	openAI403CounterCache       OpenAI403CounterCache
+	settingService              *SettingService
+	tokenCacheInvalidator       TokenCacheInvalidator
+	runtimeBlocker              AccountRuntimeBlocker
+	nvidiaAdaptiveThrottleCache NvidiaAdaptiveThrottleCache
+	nvidiaThrottleSettings      *nvidiaAdaptiveThrottleSettingsCache
+	nvidiaMetrics               *NVIDIAAdaptiveThrottleMetrics
+	nvidiaThrottleNow           func() time.Time
+	nvidiaThrottleJitter        func(time.Duration) time.Duration
+	usageCacheMu                sync.RWMutex
+	usageCache                  map[int64]*geminiUsageCacheEntry
 }
 
 type AccountRuntimeBlocker interface {
@@ -83,13 +88,22 @@ const (
 // NewRateLimitService 创建RateLimitService实例
 func NewRateLimitService(accountRepo AccountRepository, usageRepo UsageLogRepository, cfg *config.Config, geminiQuotaService *GeminiQuotaService, tempUnschedCache TempUnschedCache) *RateLimitService {
 	return &RateLimitService{
-		accountRepo:        accountRepo,
-		usageRepo:          usageRepo,
-		cfg:                cfg,
-		geminiQuotaService: geminiQuotaService,
-		tempUnschedCache:   tempUnschedCache,
-		usageCache:         make(map[int64]*geminiUsageCacheEntry),
+		accountRepo:            accountRepo,
+		usageRepo:              usageRepo,
+		cfg:                    cfg,
+		geminiQuotaService:     geminiQuotaService,
+		tempUnschedCache:       tempUnschedCache,
+		usageCache:             make(map[int64]*geminiUsageCacheEntry),
+		nvidiaThrottleSettings: newNVIDIAAdaptiveThrottleSettingsCache(),
+		nvidiaMetrics:          &NVIDIAAdaptiveThrottleMetrics{},
+		nvidiaThrottleNow:      time.Now,
+		nvidiaThrottleJitter:   defaultNVIDIAAdaptiveThrottleJitter,
 	}
+}
+
+// SetNvidiaAdaptiveThrottleCache 设置 NVIDIA 自适应节流缓存（可选依赖）。
+func (s *RateLimitService) SetNvidiaAdaptiveThrottleCache(cache NvidiaAdaptiveThrottleCache) {
+	s.nvidiaAdaptiveThrottleCache = cache
 }
 
 // SetTimeoutCounterCache 设置超时计数器缓存（可选依赖）

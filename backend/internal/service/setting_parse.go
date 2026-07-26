@@ -259,6 +259,14 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyOpenAIAdvancedSchedulerWeightSessionSticky:         "",
 
 		SettingKeyAllowUserViewErrorRequests: "false",
+
+		// NVIDIA 自适应节流（Task 1：仅落地设置键与持久化，运行时待后续 Task）。
+		// 默认值与 DefaultNVIDIAAdaptiveThrottleSettings() 一致：关闭，TTL 30m，
+		// 间隔 30s，短等待 2000ms。避免 GetNVIDIAAdaptiveThrottleSettings 读到 0 值。
+		SettingKeyNVIDIAAdaptiveThrottleEnabled:           "false",
+		SettingKeyNVIDIAAdaptiveThrottleStateTTLMinutes:   "30",
+		SettingKeyNVIDIAAdaptiveThrottleMaxSpacingSeconds: "30",
+		SettingKeyNVIDIAAdaptiveThrottleShortWaitMs:       "2000",
 	}
 
 	return s.settingRepo.SetMultiple(ctx, defaults)
@@ -970,7 +978,39 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		EnableCrossClientMap: result.GrokCrossClientModelMapEnabled,
 	})
 
+	// NVIDIA 自适应节流：合法值保留，缺失/格式错误/越界回退默认值。
+	// 默认值与 DefaultNVIDIAAdaptiveThrottleSettings() 一致：false / 30m / 30s / 2000ms。
+	result.NVIDIAAdaptiveThrottleEnabled = settings[SettingKeyNVIDIAAdaptiveThrottleEnabled] == "true" // 仅 "true" 开启
+	result.NVIDIAAdaptiveThrottleStateTTLMinutes = parseIntInRange(
+		settings[SettingKeyNVIDIAAdaptiveThrottleStateTTLMinutes],
+		nvidiaAdaptiveThrottleStateTTLMinutesMin,
+		nvidiaAdaptiveThrottleStateTTLMinutesMax,
+		30,
+	)
+	result.NVIDIAAdaptiveThrottleMaxSpacingSeconds = parseIntInRange(
+		settings[SettingKeyNVIDIAAdaptiveThrottleMaxSpacingSeconds],
+		nvidiaAdaptiveThrottleMaxSpacingSecondsMin,
+		nvidiaAdaptiveThrottleMaxSpacingSecondsMax,
+		30,
+	)
+	result.NVIDIAAdaptiveThrottleShortWaitMs = parseIntInRange(
+		settings[SettingKeyNVIDIAAdaptiveThrottleShortWaitMs],
+		nvidiaAdaptiveThrottleShortWaitMsMin,
+		nvidiaAdaptiveThrottleShortWaitMsMax,
+		2000,
+	)
+
 	return result
+}
+
+// parseIntInRange 解析 int 字符串，合法且在 [min,max] 内则返回该值，
+// 否则返回 defaultValue。用于 parseSettings 填充 SystemSettings int 字段。
+func parseIntInRange(raw string, min, max, defaultValue int) int {
+	v, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || v < min || v > max {
+		return defaultValue
+	}
+	return v
 }
 
 func clampAffiliateRebateRate(value float64) float64 {
