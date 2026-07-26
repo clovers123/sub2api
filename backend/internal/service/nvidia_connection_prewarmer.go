@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -52,6 +53,7 @@ type NVIDIAConnectionPrewarmer struct {
 	stopCh   chan struct{}
 	stopOnce sync.Once
 	startOnce sync.Once
+	stopped atomic.Bool
 	wg       sync.WaitGroup
 
 	mu       sync.Mutex
@@ -87,7 +89,7 @@ func NewNVIDIAConnectionPrewarmer(
 // Start 启动预热器：立即执行一轮预热，interval > 0 时另起后台保活循环。
 // 未启用或依赖缺失时，或者已启动 / 已停止后，均为 no-op。
 func (p *NVIDIAConnectionPrewarmer) Start() {
-	if p == nil || !p.enabled || p.upstream == nil || p.accountRepo == nil {
+	if p == nil || !p.enabled || p.upstream == nil || p.accountRepo == nil || p.stopped.Load() {
 		return
 	}
 	p.startOnce.Do(func() {
@@ -118,7 +120,10 @@ func (p *NVIDIAConnectionPrewarmer) Stop() {
 	if p == nil {
 		return
 	}
-	p.stopOnce.Do(func() { close(p.stopCh) })
+	p.stopOnce.Do(func() {
+		p.stopped.Store(true)
+		close(p.stopCh)
+	})
 	p.wg.Wait()
 }
 
@@ -139,7 +144,7 @@ func (p *NVIDIAConnectionPrewarmer) runOnce() {
 
 	proxies, err := p.collectProxyURLs(ctx)
 	if err != nil {
-		log.Printf("[NVIDIAPrewarm] list accounts failed: %v", err)
+		log.Printf("[NVIDIAPrewarm] list accounts failed")
 		return
 	}
 	if len(proxies) == 0 {
