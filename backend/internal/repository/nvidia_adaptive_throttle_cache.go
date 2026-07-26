@@ -63,6 +63,11 @@ func (c *nvidiaAdaptiveThrottleCache) Apply(ctx context.Context, accountID int64
 	key := nvidiaAdaptiveThrottleKey(accountID, model)
 	nowMs := time.Now().UnixMilli()
 
+	decayFlag := int64(0)
+	if rate.DecaySpacing {
+		decayFlag = 1
+	}
+
 	_, err := nvidiaApplyScript.Run(ctx, c.rdb, []string{key},
 		nowMs,
 		int64(nvidiaThrottleTTLSec),
@@ -70,6 +75,7 @@ func (c *nvidiaAdaptiveThrottleCache) Apply(ctx context.Context, accountID int64
 		rate.ConsecutivePenalty,
 		rate.CapacityPenaltyMs,
 		int64(0), // rateBlockUntilMs — set to capacity penalty when needed
+		decayFlag,
 	).Int64()
 	if err != nil {
 		return fmt.Errorf("nvidia adaptive throttle apply: %w", err)

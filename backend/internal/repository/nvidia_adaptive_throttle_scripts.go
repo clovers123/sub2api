@@ -21,6 +21,14 @@ const (
 // Reserve/Apply call refreshes this TTL via EXPIRE.
 const nvidiaThrottleTTLSec = 48 * 3600 // 48 hours
 
+// nvidiaSpacingDecayFloorMs is the AIMD decay floor: once a halved spacing
+// drops below this many milliseconds it collapses to 0 (no spacing at all).
+// nvidiaSpacingDecayFloorMsStr is the same value inlined into the Lua script.
+const (
+	nvidiaSpacingDecayFloorMs    = 100
+	nvidiaSpacingDecayFloorMsStr = "100"
+)
+
 // nvidiaReserveScript atomically checks and claims a send window.
 //
 // KEYS[1] = nvidia:adaptive:<accountID>:<hex>
@@ -71,6 +79,8 @@ var nvidiaReserveScript = redis.NewScript(`
 // ARGV[4] = consecutive_penalty
 // ARGV[5] = capacity_block_until_ms (0 – leave unchanged)
 // ARGV[6] = rate_block_until_ms      (0 – leave unchanged)
+// ARGV[7] = decay flag (1 – on success halve existing spacing when ARGV[3]==0;
+//	values below nvidiaSpacingDecayFloorMs collapse to 0; 0 – keep old behavior)
 var nvidiaApplyScript = redis.NewScript(`
 	redis.replicate_commands()
 
@@ -81,6 +91,7 @@ var nvidiaApplyScript = redis.NewScript(`
 	local penaltyArg    = tonumber(ARGV[4])
 	local capacityArg   = tonumber(ARGV[5])
 	local rateArg       = tonumber(ARGV[6])
+	local decayArg      = tonumber(ARGV[7] or '0')
 
 	local oldSpacing  = tonumber(redis.call('HGET', key, 'spacing_ms') or 0)
 	local oldCap      = tonumber(redis.call('HGET', key, 'capacity_block_until_ms') or 0)
@@ -89,6 +100,13 @@ var nvidiaApplyScript = redis.NewScript(`
 	local newSpacing  = oldSpacing
 	if spacingArg > 0 then
 		newSpacing = spacingArg
+	elseif decayArg == 1 and oldSpacing > 0 then
+		-- AIMD 成功衰减：每次成功将间隔减半，低于下限直接归零，
+		-- 保证惩罚在连续成功后快速恢复而不是等 48h TTL 过期。
+		newSpacing = math.floor(oldSpacing / 2)
+		if newSpacing < ` + nvidiaSpacingDecayFloorMsStr + ` then
+			newSpacing = 0
+		end
 	end
 
 	local newCap = oldCap
