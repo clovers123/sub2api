@@ -457,6 +457,15 @@ gateway:
     # 非正值（0 / 负数）只回退到 gateway.idle_conn_timeout_seconds。
     # Non-positive (0 / negative) values fall back only to gateway.idle_conn_timeout_seconds.
     idle_conn_timeout_seconds: 600
+    # NVIDIA 上游连接预热：启动时预热一次 + 按间隔周期保活（仅在 enabled=true 时生效）。
+    # 预热请求不携带任何凭据，按“主机 + 代理”维度各发一次探测请求以完成 TCP+TLS+H2 建连。
+    # NVIDIA upstream connection prewarming: one warm-up at startup plus periodic
+    # keepalive rounds (effective only when enabled=true). Prewarm requests carry no
+    # credentials; one probe per distinct host+proxy completes TCP+TLS+H2 setup.
+    prewarm_enabled: false
+    # 周期保活间隔（秒）；0 表示仅启动时预热一次，不启动周期保活。
+    # Keepalive interval in seconds; 0 means prewarm once at startup with no ticker.
+    prewarm_interval_seconds: 240
   # HTTP upstream connection pool settings (HTTP/2 + multi-proxy scenario defaults)
   # HTTP 上游连接池配置（HTTP/2 + 多代理场景默认值）
   # Max idle connections across all hosts
