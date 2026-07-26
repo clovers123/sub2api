@@ -51,6 +51,7 @@ type NVIDIAConnectionPrewarmer struct {
 
 	stopCh   chan struct{}
 	stopOnce sync.Once
+	startOnce sync.Once
 	wg       sync.WaitGroup
 
 	mu       sync.Mutex
@@ -84,30 +85,32 @@ func NewNVIDIAConnectionPrewarmer(
 }
 
 // Start 启动预热器：立即执行一轮预热，interval > 0 时另起后台保活循环。
-// 未启用或依赖缺失时为 no-op。
+// 未启用或依赖缺失时，或者已启动 / 已停止后，均为 no-op。
 func (p *NVIDIAConnectionPrewarmer) Start() {
 	if p == nil || !p.enabled || p.upstream == nil || p.accountRepo == nil {
 		return
 	}
-	p.wg.Add(1)
-	go func() {
-		defer p.wg.Done()
-		p.runOnce()
-		if p.interval <= 0 {
-			// interval=0：仅启动预热一次，不做周期保活。
-			return
-		}
-		ticker := time.NewTicker(p.interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				p.runOnce()
-			case <-p.stopCh:
+	p.startOnce.Do(func() {
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			p.runOnce()
+			if p.interval <= 0 {
+				// interval=0：仅启动预热一次，不做周期保活。
 				return
 			}
-		}
-	}()
+			ticker := time.NewTicker(p.interval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					p.runOnce()
+				case <-p.stopCh:
+					return
+				}
+			}
+		}()
+	})
 }
 
 // Stop 停止预热器并等待后台协程退出（幂等）。
@@ -170,8 +173,7 @@ func (p *NVIDIAConnectionPrewarmer) runOnce() {
 			defer countMu.Unlock()
 			if err != nil {
 				failed++
-				// 注意：不打印原始代理 URL（可能含凭据），仅打印错误。
-				log.Printf("[NVIDIAPrewarm] prewarm failed: %v", err)
+				// 不打印原始 error（可能含代理 URL 凭据）；轮次汇总行会报告失败计数。
 				return
 			}
 			succeeded++
