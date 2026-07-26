@@ -16,6 +16,7 @@ import (
 type OpsHandler struct {
 	opsService                        *service.OpsService
 	nvidiaSharedConnectionPoolMetrics *service.NVIDIASharedConnectionPoolMetrics
+	nvidiaPrewarmer                   *service.NVIDIAConnectionPrewarmer
 }
 
 // GetErrorLogByID returns ops error log detail.
@@ -78,10 +79,12 @@ func NewOpsHandler(opsService *service.OpsService) *OpsHandler {
 func ProvideOpsHandler(
 	opsService *service.OpsService,
 	metrics *service.NVIDIASharedConnectionPoolMetrics,
+	prewarmer *service.NVIDIAConnectionPrewarmer,
 ) *OpsHandler {
 	return &OpsHandler{
 		opsService:                        opsService,
 		nvidiaSharedConnectionPoolMetrics: metrics,
+		nvidiaPrewarmer:                   prewarmer,
 	}
 }
 

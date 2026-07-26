@@ -1093,6 +1093,12 @@ type GatewayNvidiaSharedConnectionPoolConfig struct {
 	// IdleConnTimeoutSeconds: 共享 NVIDIA 客户端的空闲连接超时（秒）。
 	// 非正值（0 / 负数）只回退到 gateway.idle_conn_timeout_seconds。
 	IdleConnTimeoutSeconds int `mapstructure:"idle_conn_timeout_seconds"`
+	// PrewarmEnabled: 是否启用 NVIDIA 上游连接预热（启动预热 + 周期保活）。
+	// 仅在 Enabled=true 时生效；预热请求不携带任何凭据。
+	PrewarmEnabled bool `mapstructure:"prewarm_enabled"`
+	// PrewarmIntervalSeconds: 周期保活间隔（秒）。
+	// 0 表示仅在启动时预热一次，不启动周期保活。
+	PrewarmIntervalSeconds int `mapstructure:"prewarm_interval_seconds"`
 }
 
 // GatewayOpenAIProxyStreamCircuitConfig controls the bounded, in-process
@@ -2393,6 +2399,9 @@ func setDefaults() {
 	// 非正 idle_conn_timeout_seconds 只回退到 gateway.idle_conn_timeout_seconds。
 	viper.SetDefault("gateway.nvidia_shared_connection_pool.enabled", false)
 	viper.SetDefault("gateway.nvidia_shared_connection_pool.idle_conn_timeout_seconds", 600)
+	// NVIDIA 上游连接预热：默认关闭；间隔 0 表示仅启动时预热一次。
+	viper.SetDefault("gateway.nvidia_shared_connection_pool.prewarm_enabled", false)
+	viper.SetDefault("gateway.nvidia_shared_connection_pool.prewarm_interval_seconds", 240)
 	viper.SetDefault("gateway.concurrency_slot_ttl_minutes", 30) // 并发槽位过期时间（支持超长请求）
 	viper.SetDefault("gateway.stream_data_interval_timeout", 180)
 	viper.SetDefault("gateway.stream_keepalive_interval", 10)

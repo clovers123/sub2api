@@ -738,6 +738,63 @@ func (s *httpUpstreamService) acquireClientWithProfile(proxyURL string, accountI
 	return s.getClientEntry(proxyURL, accountID, accountConcurrency, profile, true, true, requestURL)
 }
 
+// NVIDIA 连接预热相关常量
+const (
+	// nvidiaPrewarmBaseURL: 预热目标（NVIDIA 官方 API 主机）
+	nvidiaPrewarmBaseURL = "https://integrate.api.nvidia.com"
+	// nvidiaPrewarmTimeout: 单次预热探测请求超时
+	nvidiaPrewarmTimeout = 10 * time.Second
+	// nvidiaPrewarmBodyDrainLimit: 预热响应体最大读取字节数（读尽后连接才能回空闲池复用）
+	nvidiaPrewarmBodyDrainLimit = 64 << 10
+)
+
+// PrewarmNVIDIAConnection 对指定代理（空字符串表示直连）预热 NVIDIA 上游连接。
+// 复用 NVIDIA 共享连接池的客户端条目，发送一次不携带凭据的 GET /v1/models
+// 探测请求，完成 TCP+TLS+H2 建连。任何 HTTP 状态码（含 401）均视为成功，
+// 仅传输层错误返回 error。
+//
+// 实现 service.NVIDIAConnectionPrewarmUpstream 接口。
+func (s *httpUpstreamService) PrewarmNVIDIAConnection(ctx context.Context, proxyURL string) error {
+	return s.prewarmNVIDIAConnectionToBase(ctx, proxyURL, nvidiaPrewarmBaseURL)
+}
+
+// prewarmNVIDIAConnectionToBase 预热实现主体，baseURL 可注入以便单元测试
+// （httptest 服务器的主机名不是 NVIDIA 官方主机）。
+func (s *httpUpstreamService) prewarmNVIDIAConnectionToBase(ctx context.Context, proxyURL string, baseURL string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, nvidiaPrewarmTimeout)
+	defer cancel()
+
+	target, err := url.Parse(strings.TrimRight(baseURL, "/") + "/v1/models")
+	if err != nil {
+		return fmt.Errorf("nvidia prewarm: parse target url: %w", err)
+	}
+
+	// markInFlight=false：预热不占用进行中请求计数；
+	// enforceLimit=false：预热不因缓存上限被拒绝（复用已有条目为主）。
+	entry, err := s.getClientEntry(proxyURL, 0, 0, service.HTTPUpstreamProfileNVIDIA, false, false, target)
+	if err != nil {
+		return fmt.Errorf("nvidia prewarm: get client: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+	if err != nil {
+		return fmt.Errorf("nvidia prewarm: build request: %w", err)
+	}
+	// 预热请求刻意不携带 Authorization 头：上游返回 401 同样完成 TCP+TLS+H2 建连。
+
+	resp, err := entry.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("nvidia prewarm: transport error: %w", err)
+	}
+	// 读尽并关闭响应体，让底层连接回到空闲池以便后续请求复用。
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, nvidiaPrewarmBodyDrainLimit))
+	_ = resp.Body.Close()
+	return nil
+}
+
 // getOrCreateClient 获取或创建客户端
 // 根据隔离策略和参数决定缓存键，处理代理变更和配置变更
 //

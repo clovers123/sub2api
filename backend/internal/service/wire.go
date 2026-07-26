@@ -348,6 +348,24 @@ func ProvideProxyExpiryService(proxyRepo ProxyRepository) *ProxyExpiryService {
 	return svc
 }
 
+// ProvideNVIDIAConnectionPrewarmer creates and starts NVIDIAConnectionPrewarmer.
+// 未启用（shared connection pool 或 prewarm_enabled=false，默认）时 Start 为 no-op。
+func ProvideNVIDIAConnectionPrewarmer(upstream HTTPUpstream, accountRepo AccountRepository, cfg *config.Config) *NVIDIAConnectionPrewarmer {
+	enabled := false
+	intervalSeconds := nvidiaPrewarmDefaultIntervalSeconds
+	if cfg != nil {
+		pool := cfg.Gateway.NvidiaSharedConnectionPool
+		enabled = pool.Enabled && pool.PrewarmEnabled
+		intervalSeconds = pool.PrewarmIntervalSeconds
+	}
+	// repository 的 httpUpstreamService 同时实现 HTTPUpstream 与
+	// NVIDIAConnectionPrewarmUpstream；断言失败（如测试桩）则预热能力缺失，Start 为 no-op。
+	prewarmUpstream, _ := upstream.(NVIDIAConnectionPrewarmUpstream)
+	svc := NewNVIDIAConnectionPrewarmer(prewarmUpstream, accountRepo, enabled, intervalSeconds)
+	svc.Start()
+	return svc
+}
+
 // ProvideSubscriptionExpiryService creates and starts SubscriptionExpiryService.
 func ProvideSubscriptionExpiryService(userSubRepo UserSubscriptionRepository, settingRepo SettingRepository, notificationEmailService *NotificationEmailService, lockCache LeaderLockCache, db *sql.DB) *SubscriptionExpiryService {
 	svc := NewSubscriptionExpiryService(userSubRepo, time.Minute)
@@ -837,6 +855,7 @@ var ProviderSet = wire.NewSet(
 	ProvideAccountExpiryService,
 	ProvideOpenAICodexVersionSyncService,
 	ProvideProxyExpiryService,
+	ProvideNVIDIAConnectionPrewarmer,
 	ProvideSubscriptionExpiryService,
 	ProvideTimingWheelService,
 	ProvideDashboardAggregationService,
