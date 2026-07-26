@@ -539,6 +539,28 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 
 	updates[SettingKeyAllowUserViewErrorRequests] = strconv.FormatBool(settings.AllowUserViewErrorRequests)
 
+	// NVIDIA 自适应节流：越界回退默认值（与 GetNVIDIAAdaptiveThrottleSettings / parseSettings 一致）。
+	// 默认：关闭，TTL 30m，间隔 30s，短等待 2000ms。ShortWait=0 合法（关闭短等待）。
+	ttlMinutes := settings.NVIDIAAdaptiveThrottleStateTTLMinutes
+	if ttlMinutes < nvidiaAdaptiveThrottleStateTTLMinutesMin || ttlMinutes > nvidiaAdaptiveThrottleStateTTLMinutesMax {
+		ttlMinutes = 30
+	}
+	updates[SettingKeyNVIDIAAdaptiveThrottleStateTTLMinutes] = strconv.Itoa(ttlMinutes)
+
+	spacingSeconds := settings.NVIDIAAdaptiveThrottleMaxSpacingSeconds
+	if spacingSeconds < nvidiaAdaptiveThrottleMaxSpacingSecondsMin || spacingSeconds > nvidiaAdaptiveThrottleMaxSpacingSecondsMax {
+		spacingSeconds = 30
+	}
+	updates[SettingKeyNVIDIAAdaptiveThrottleMaxSpacingSeconds] = strconv.Itoa(spacingSeconds)
+
+	shortWaitMs := settings.NVIDIAAdaptiveThrottleShortWaitMs
+	if shortWaitMs < nvidiaAdaptiveThrottleShortWaitMsMin || shortWaitMs > nvidiaAdaptiveThrottleShortWaitMsMax {
+		shortWaitMs = 2000
+	}
+	updates[SettingKeyNVIDIAAdaptiveThrottleShortWaitMs] = strconv.Itoa(shortWaitMs)
+
+	updates[SettingKeyNVIDIAAdaptiveThrottleEnabled] = strconv.FormatBool(settings.NVIDIAAdaptiveThrottleEnabled)
+
 	return updates, nil
 }
 

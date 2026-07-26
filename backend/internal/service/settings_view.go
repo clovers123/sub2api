@@ -1,6 +1,9 @@
 package service
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
@@ -307,6 +310,13 @@ type SystemSettings struct {
 
 	// 允许终端用户在用量页查看自己的失败请求
 	AllowUserViewErrorRequests bool
+
+	// NVIDIA 自适应节流运行时配置（Task 1：仅设置键 + typed 持久化）。
+	// 边界与 GetNVIDIAAdaptiveThrottleSettings 一致；UpdateSettings 自动钳制后写入。
+	NVIDIAAdaptiveThrottleEnabled           bool // 总开关
+	NVIDIAAdaptiveThrottleStateTTLMinutes   int  // 状态 TTL（分钟），1..1440
+	NVIDIAAdaptiveThrottleMaxSpacingSeconds int  // 最大间隔（秒），1..300
+	NVIDIAAdaptiveThrottleShortWaitMs       int  // 短等待（毫秒），0..10000（0 表示关闭）
 }
 
 type DefaultSubscriptionSetting struct {
@@ -692,5 +702,31 @@ type OpenAIFastPolicySettings struct {
 func DefaultOpenAIFastPolicySettings() *OpenAIFastPolicySettings {
 	return &OpenAIFastPolicySettings{
 		Rules: []OpenAIFastPolicyRule{},
+	}
+}
+
+// NVIDIA 自适应节流运行时配置（admin 可在系统设置中调整的运行参数）。
+// Task 1 仅落地设置键、解析、持久化与 typed read，Redis / 调度 / timer 留待后续 Task。
+//
+// 字段约束（见 GetNVIDIAAdaptiveThrottleSettings 中说明）：
+//   - Enabled: bool，默认 false（仅管理员显式开启）。
+//   - StateTTL: 1..1440 分钟，默认 30 分钟。
+//   - MaxSpacing: 1..300 秒，默认 30 秒。
+//   - ShortWait: 0..10000 毫秒，默认 2000 毫秒；0 表示关闭短等待。
+type NVIDIAAdaptiveThrottleSettings struct {
+	Enabled    bool          // 总开关
+	StateTTL   time.Duration // 状态 TTL：1..1440 分钟
+	MaxSpacing time.Duration // 最大间隔：1..300 秒
+	ShortWait  time.Duration // 短等待：0..10000 毫秒（0 表示关闭）
+}
+
+// DefaultNVIDIAAdaptiveThrottleSettings 返回默认的 NVIDIA 自适应节流配置（仅关闭）。
+// 默认值与 InitializeDefaultSettings 中持久化的字符串保持一致，避免读到 0 值。
+func DefaultNVIDIAAdaptiveThrottleSettings() *NVIDIAAdaptiveThrottleSettings {
+	return &NVIDIAAdaptiveThrottleSettings{
+		Enabled:    false,
+		StateTTL:   30 * time.Minute,
+		MaxSpacing: 30 * time.Second,
+		ShortWait:  2000 * time.Millisecond,
 	}
 }

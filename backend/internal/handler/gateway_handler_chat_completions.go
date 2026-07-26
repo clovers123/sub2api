@@ -165,6 +165,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 	if groupPlatform == service.PlatformGemini {
 		fs = NewFailoverState(h.maxAccountSwitchesGemini, false)
 	}
+	nvidiaThrottleWaited := false
 
 	for {
 		if c.Request.Context().Err() != nil {
@@ -172,6 +173,21 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 		}
 		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, selectionSessionHash, reqModel, fs.FailedAccountIDs, "", int64(0))
 		if err != nil {
+			// NVIDIA adaptive throttle: short-wait once, then return retryable 429
+			var throttleBlocked *service.NVIDIAAdaptiveThrottleBlockedError
+			if errors.As(err, &throttleBlocked) {
+				action := nvidiaThrottleHandlerDecision(throttleBlocked, nvidiaThrottleWaited)
+				if action.Wait {
+					nvidiaThrottleWaited = true
+					if waitErr := waitForNVIDIAThrottle(c.Request.Context(), action.Delay); waitErr != nil {
+						return
+					}
+					continue
+				}
+				c.Header("Retry-After", strconv.FormatInt(action.RetryAfter, 10))
+				h.chatCompletionsErrorResponse(c, http.StatusTooManyRequests, "rate_limit_error", "All NVIDIA accounts are temporarily throttled; retry after "+strconv.FormatInt(action.RetryAfter, 10)+"s")
+				return
+			}
 			if len(fs.FailedAccountIDs) == 0 {
 				cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, groupPlatform)
 				cls = classifySelectionFailureError(err, cls)
@@ -404,4 +420,50 @@ func (h *GatewayHandler) handleCCFailoverExhausted(c *gin.Context, lastErr *serv
 		return
 	}
 	h.chatCompletionsErrorResponse(c, statusCode, "server_error", "All available accounts exhausted")
+}
+
+// nvidiaThrottleHandlerAction describes how the handler should react to an
+// NVIDIAAdaptiveThrottleBlockedError.
+type nvidiaThrottleHandlerAction struct {
+	Wait       bool
+	Delay      time.Duration
+	RetryAfter int64
+}
+
+// nvidiaThrottleHandlerDecision translates a blocked error into a handler action.
+// When ShortWait is enabled and RetryAfter fits within it and we haven't
+// waited yet, the handler should wait once then re-select. Otherwise it
+// should respond with a 429 + Retry-After. RetryAfter is ceiling-rounded
+// from milliseconds to integer seconds, never less than 1.
+func nvidiaThrottleHandlerDecision(
+	throttleErr *service.NVIDIAAdaptiveThrottleBlockedError,
+	alreadyWaited bool,
+) nvidiaThrottleHandlerAction {
+	if throttleErr == nil {
+		return nvidiaThrottleHandlerAction{RetryAfter: 1}
+	}
+	retrySec := int64((throttleErr.RetryAfter.Milliseconds() + 999) / 1000)
+	if retrySec < 1 {
+		retrySec = 1
+	}
+	if !alreadyWaited && throttleErr.ShortWait > 0 && throttleErr.RetryAfter > 0 && throttleErr.RetryAfter <= throttleErr.ShortWait {
+		return nvidiaThrottleHandlerAction{Wait: true, Delay: throttleErr.RetryAfter}
+	}
+	return nvidiaThrottleHandlerAction{RetryAfter: retrySec}
+}
+
+// waitForNVIDIAThrottle waits for delay or until ctx is cancelled.
+// It returns ctx.Err() on cancellation, nil on timeout.
+func waitForNVIDIAThrottle(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }

@@ -6,6 +6,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	mathrand "math/rand"
@@ -111,6 +112,11 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 	cfg := s.schedulingConfig()
 
+	// NVIDIA adaptive throttle gate tracker. Local to this request — no shared
+	// state, no FailedAccountIDs side effects (gated accounts are skipped via
+	// localExcluded at each layer and never increment switchCount).
+	nvidiaGate := newNvidiaThrottleSelection(s, requestedModel)
+
 	// 检查 Claude Code 客户端限制（可能会替换 groupID 为降级分组）
 	group, groupID, err := s.checkClaudeCodeRestriction(ctx, groupID)
 	if err != nil {
@@ -171,7 +177,24 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		for {
 			account, err := s.SelectAccountForModelWithExclusions(ctx, groupID, sessionHash, requestedModel, localExcluded)
 			if err != nil {
+				// Selection exhausted. If every NVIDIA candidate was gated
+				// (none were excluded by upstream filtering), surface the
+				// BlockedError with the tightest RetryAfter observed.
+				if errors.Is(err, ErrNoAvailableAccounts) {
+					if blocked := nvidiaGate.blockedError(ctx); blocked != nil {
+						return nil, blocked
+					}
+				}
 				return nil, err
+			}
+
+			// NVIDIA adaptive throttle pre-send gate: skip gated candidates
+			// before acquiring a concurrency slot. Gated accounts are added
+			// to localExcluded so the next iteration re-selects; they are
+			// NOT added to FailedAccountIDs and do NOT increment switchCount.
+			if gated, _, _ := nvidiaGate.gateAccount(ctx, account); gated {
+				localExcluded[account.ID] = struct{}{}
+				continue
 			}
 
 			result, err := s.tryAcquireAccountSlot(ctx, account.ID, account.Concurrency)
@@ -353,7 +376,17 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 						rpmPass := gatePass && s.isAccountSchedulableForRPM(ctx, stickyAccount, true)
 
-						if rpmPass { // 粘性会话窗口费用+RPM 检查
+						// NVIDIA adaptive throttle pre-send gate: routed sticky
+						// cannot bypass. If gated, fall through to Layer 2
+						// rather than acquiring the slot.
+						nvidiaGated := false
+						if rpmPass {
+							if gated, _, _ := nvidiaGate.gateAccount(ctx, stickyAccount); gated {
+								nvidiaGated = true
+							}
+						}
+
+						if rpmPass && !nvidiaGated { // 粘性会话窗口费用+RPM 检查
 							result, err := s.tryAcquireAccountSlot(ctx, stickyAccountID, stickyAccount.Concurrency)
 							if err == nil && result.Acquired {
 								// 会话数量限制检查
@@ -397,6 +430,8 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 								}
 							}
 							// 粘性账号槽位满且等待队列已满，继续使用负载感知选择
+						} else if nvidiaGated {
+							stickyCacheMissReason = "nvidia_throttle_gated"
 						} else if !gatePass {
 							stickyCacheMissReason = "gate_check"
 						} else {
@@ -468,6 +503,11 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 				// 4. 尝试获取槽位
 				for _, item := range routingAvailable {
+					// NVIDIA adaptive throttle pre-send gate: gated routed
+					// candidates are skipped (not added to FailedAccountIDs).
+					if gated, _, _ := nvidiaGate.gateAccount(ctx, item.account); gated {
+						continue
+					}
 					result, err := s.tryAcquireAccountSlot(ctx, item.account.ID, item.account.Concurrency)
 					if err == nil && result.Acquired {
 						// 会话数量限制检查
@@ -488,6 +528,11 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				// 5. 所有路由账号槽位满，尝试返回等待计划（选择负载最低的）
 				// 遍历找到第一个满足会话限制的账号
 				for _, item := range routingAvailable {
+					// NVIDIA adaptive throttle pre-send gate: gated routed
+					// candidates must not be returned as wait plans either.
+					if gated, _, _ := nvidiaGate.gateAccount(ctx, item.account); gated {
+						continue
+					}
 					if !s.checkAndRegisterSession(ctx, item.account, sessionHash) {
 						continue // 会话限制已满，尝试下一个
 					}
@@ -552,53 +597,58 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				)
 
 				if !clearSticky && platformOK && profitOK && modelSupported && modelSchedulable && quotaOK && windowCostOK && rpmOK && schedulable {
-					result, err := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
-					if err == nil && result.Acquired {
-						// 会话数量限制检查
-						if !s.checkAndRegisterSession(ctx, account, sessionHash) {
-							result.ReleaseFunc() // 释放槽位，继续到 Layer 2
-							slog.Debug("sticky.layer1_5_no_routing_miss",
-								"account_id", accountID,
-								"reason", "session_limit",
-								"session", shortSessionHash(sessionHash),
-							)
-						} else {
-							slog.Debug("sticky.layer1_5_no_routing_hit",
-								"account_id", accountID,
-								"session", shortSessionHash(sessionHash),
-								"result", "slot_acquired",
-							)
-							if s.cache != nil {
-								_ = s.cache.RefreshSessionTTL(ctx, derefGroupID(groupID), sessionHash, stickySessionTTL)
+					// NVIDIA adaptive throttle pre-send gate: non-routed
+					// sticky cannot bypass. If gated, fall through to
+					// Layer 2 (do not acquire slot, do not delete cache).
+					if gated, _, _ := nvidiaGate.gateAccount(ctx, account); !gated {
+						result, err := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
+						if err == nil && result.Acquired {
+							// 会话数量限制检查
+							if !s.checkAndRegisterSession(ctx, account, sessionHash) {
+								result.ReleaseFunc() // 释放槽位，继续到 Layer 2
+								slog.Debug("sticky.layer1_5_no_routing_miss",
+									"account_id", accountID,
+									"reason", "session_limit",
+									"session", shortSessionHash(sessionHash),
+								)
+							} else {
+								slog.Debug("sticky.layer1_5_no_routing_hit",
+									"account_id", accountID,
+									"session", shortSessionHash(sessionHash),
+									"result", "slot_acquired",
+								)
+								if s.cache != nil {
+									_ = s.cache.RefreshSessionTTL(ctx, derefGroupID(groupID), sessionHash, stickySessionTTL)
+								}
+								return s.newSelectionResult(ctx, account, true, result.ReleaseFunc, nil)
 							}
-							return s.newSelectionResult(ctx, account, true, result.ReleaseFunc, nil)
-						}
-					} else {
-						slog.Debug("sticky.layer1_5_no_routing_slot_busy",
-							"account_id", accountID,
-							"session", shortSessionHash(sessionHash),
-						)
-					}
-
-					waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, accountID)
-					if waitingCount < cfg.StickySessionMaxWaiting {
-						// 会话数量限制检查（等待计划也需要占用会话配额）
-						if !s.checkAndRegisterSession(ctx, account, sessionHash) {
-							// 会话限制已满，继续到 Layer 2
 						} else {
-							slog.Debug("sticky.layer1_5_no_routing_hit",
+							slog.Debug("sticky.layer1_5_no_routing_slot_busy",
 								"account_id", accountID,
 								"session", shortSessionHash(sessionHash),
-								"result", "wait_plan",
 							)
-							return s.newSelectionResult(ctx, account, false, nil, &AccountWaitPlan{
-								AccountID:      accountID,
-								MaxConcurrency: account.Concurrency,
-								Timeout:        cfg.StickySessionWaitTimeout,
-								MaxWaiting:     cfg.StickySessionMaxWaiting,
-							})
 						}
-					}
+
+						waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, accountID)
+						if waitingCount < cfg.StickySessionMaxWaiting {
+							// 会话数量限制检查（等待计划也需要占用会话配额）
+							if !s.checkAndRegisterSession(ctx, account, sessionHash) {
+								// 会话限制已满，继续到 Layer 2
+							} else {
+								slog.Debug("sticky.layer1_5_no_routing_hit",
+									"account_id", accountID,
+									"session", shortSessionHash(sessionHash),
+									"result", "wait_plan",
+								)
+								return s.newSelectionResult(ctx, account, false, nil, &AccountWaitPlan{
+									AccountID:      accountID,
+									MaxConcurrency: account.Concurrency,
+									Timeout:        cfg.StickySessionWaitTimeout,
+									MaxWaiting:     cfg.StickySessionMaxWaiting,
+								})
+							}
+						}
+					} // end if !gated
 				} else if !clearSticky {
 					slog.Debug("sticky.layer1_5_no_routing_miss",
 						"account_id", accountID,
@@ -688,7 +738,22 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 	loadMap, err := s.concurrencyService.GetAccountsLoadBatch(ctx, accountLoads)
 	if err != nil {
-		if result, ok, legacyErr := s.tryAcquireByLegacyOrder(ctx, candidates, groupID, sessionHash, preferOAuth); legacyErr != nil {
+		// Filter out NVIDIA-throttle-gated candidates before the legacy
+		// acquisition path so the BlockedError can be surfaced on the
+		// "every actual NVIDIA candidate gated" exit.
+		gatedLegacy := make([]*Account, 0, len(candidates))
+		for _, acc := range candidates {
+			if gated, _, _ := nvidiaGate.gateAccount(ctx, acc); gated {
+				continue
+			}
+			gatedLegacy = append(gatedLegacy, acc)
+		}
+		if len(gatedLegacy) == 0 {
+			if blocked := nvidiaGate.blockedError(ctx); blocked != nil {
+				return nil, blocked
+			}
+		}
+		if result, ok, legacyErr := s.tryAcquireByLegacyOrder(ctx, gatedLegacy, groupID, sessionHash, preferOAuth); legacyErr != nil {
 			return nil, legacyErr
 		} else if ok {
 			return result, nil
@@ -710,6 +775,23 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 		// 分层过滤选择：优先级 →（可选）最早重置 → 负载率 → LRU
 		for len(available) > 0 {
+			// NVIDIA adaptive throttle pre-send gate: skip gated candidates
+			// before slot acquisition in the Layer 2 loop. When the gate
+			// covers every Layer 2 candidate, the function falls through to
+			// Layer 3 where the all-gated return lives.
+			allGated := true
+			for _, item := range available {
+				if gated, _, _ := nvidiaGate.gateAccount(ctx, item.account); !gated {
+					allGated = false
+					break
+				}
+			}
+			if allGated {
+				if blocked := nvidiaGate.blockedError(ctx); blocked != nil {
+					return nil, blocked
+				}
+			}
+
 			// 1. 取优先级最小的集合
 			candidates := filterByMinPriority(available)
 			// 2. （可选）use-it-or-lose-it：优先选用会话窗口最早重置的账号
@@ -722,6 +804,20 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			selected := selectByLRU(candidates, preferOAuth)
 			if selected == nil {
 				break
+			}
+
+			// NVIDIA adaptive throttle pre-send gate: do not acquire a slot
+			// for a gated candidate — drop it and re-filter the remainder.
+			if gated, _, _ := nvidiaGate.gateAccount(ctx, selected.account); gated {
+				selectedID := selected.account.ID
+				newAvailable := make([]accountWithLoad, 0, len(available)-1)
+				for _, acc := range available {
+					if acc.account.ID != selectedID {
+						newAvailable = append(newAvailable, acc)
+					}
+				}
+				available = newAvailable
+				continue
 			}
 
 			result, err := s.tryAcquireAccountSlot(ctx, selected.account.ID, selected.account.Concurrency)
@@ -752,6 +848,11 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	// ============ Layer 3: 兜底排队 ============
 	s.sortCandidatesForFallback(candidates, preferOAuth, cfg.FallbackSelectionMode)
 	for _, acc := range candidates {
+		// NVIDIA adaptive throttle pre-send gate: gated candidates must not
+		// be returned as wait plans either — fall through to next account.
+		if gated, _, _ := nvidiaGate.gateAccount(ctx, acc); gated {
+			continue
+		}
 		// 会话数量限制检查（等待计划也需要占用会话配额）
 		if !s.checkAndRegisterSession(ctx, acc, sessionHash) {
 			continue // 会话限制已满，尝试下一个账号
@@ -762,6 +863,11 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			Timeout:        cfg.FallbackWaitTimeout,
 			MaxWaiting:     cfg.FallbackMaxWaiting,
 		})
+	}
+	// Every actual NVIDIA candidate was gated — surface the minimum
+	// RetryAfter rather than a generic "no available accounts" error.
+	if blocked := nvidiaGate.blockedError(ctx); blocked != nil {
+		return nil, blocked
 	}
 	return nil, ErrNoAvailableAccounts
 }
@@ -2585,4 +2691,93 @@ func (s *GatewayService) isModelSupportedByAccount(account *Account, requestedMo
 	}
 	// 其他平台使用账户的模型支持检查
 	return account.IsModelSupported(requestedModel)
+}
+
+// nvidiaThrottleSelection collects per-request NVIDIA adaptive-throttle gate
+// decisions. It is constructed fresh per SelectAccountWithLoadAwareness call
+// so that one request's gate state cannot leak into another.
+//
+// The tracker calls the existing RateLimitService.ReserveNVIDIAAdaptiveThrottle
+// hook (no new Redis paths, no new dependency wiring). It records the minimum
+// non-zero RetryAfter observed across gated accounts so the caller can surface
+// a *NVIDIAAdaptiveThrottleBlockedError with the tightest hint when every
+// actual NVIDIA candidate is gated.
+//
+// Fail-open semantics are delegated to RateLimitService.ReserveNVIDIAAdaptiveThrottle:
+// when the feature is disabled or the cache call errors, the hook returns
+// (zero-result, false) and reserve() treats the account as not gated.
+type nvidiaThrottleSelection struct {
+	svc         *GatewayService
+	model       string
+	minRetry    time.Duration
+	gatedCount  int
+	reservedCnt int
+}
+
+func newNvidiaThrottleSelection(s *GatewayService, model string) *nvidiaThrottleSelection {
+	return &nvidiaThrottleSelection{svc: s, model: model}
+}
+
+// reserve consults the throttle cache for (account.ID, model). Returns
+// (gated, retryAfter). When gated is false the caller must treat the account
+// as schedulable and ignore retryAfter. retryAfter is the minimum non-zero
+// value observed so far when gated=true, otherwise 0.
+//
+// The method is safe to call on a nil tracker (returns not-gated). It is also
+// a no-op when the GatewayService has no rateLimitService wired.
+func (t *nvidiaThrottleSelection) reserve(ctx context.Context, account *Account) (bool, time.Duration) {
+	if t == nil || t.svc == nil || t.svc.rateLimitService == nil || account == nil || account.ID <= 0 {
+		return false, 0
+	}
+	t.reservedCnt++
+	result, handled := t.svc.rateLimitService.ReserveNVIDIAAdaptiveThrottle(ctx, NvidiaReserveRequest{
+		Scope: NVIDIAThrottleScope{AccountID: account.ID, CanonicalModel: t.model},
+	})
+	if !handled || result.Allowed {
+		return false, 0
+	}
+	t.gatedCount++
+	retry := time.Duration(result.RetryAfterMs) * time.Millisecond
+	if retry <= 0 {
+		retry = 0
+	}
+	if t.minRetry == 0 || (retry > 0 && retry < t.minRetry) {
+		t.minRetry = retry
+	}
+	return true, retry
+}
+
+// minRetryAfter returns the tightest retry-after observed across gated
+// accounts during this request, or 0 if no account was gated.
+func (t *nvidiaThrottleSelection) minRetryAfter() time.Duration {
+	if t == nil {
+		return 0
+	}
+	return t.minRetry
+}
+
+// blockedError returns a *NVIDIAAdaptiveThrottleBlockedError when at least one
+// candidate was gated, otherwise nil. ShortWait is read from the adaptive
+// throttle runtime settings so the handler can decide whether to wait.
+func (t *nvidiaThrottleSelection) blockedError(ctx context.Context) *NVIDIAAdaptiveThrottleBlockedError {
+	if t == nil || t.gatedCount == 0 {
+		return nil
+	}
+	shortWait := time.Duration(0)
+	if t.svc != nil && t.svc.rateLimitService != nil {
+		shortWait = t.svc.rateLimitService.GetNVIDIAAdaptiveThrottleShortWait(ctx)
+	}
+	return &NVIDIAAdaptiveThrottleBlockedError{RetryAfter: t.minRetryAfter(), ShortWait: shortWait}
+}
+
+// nvidiaThrottleGate is a tiny helper used at call sites that must consult the
+// tracker without holding a *nvidiaThrottleSelection reference explicitly.
+// It returns (gated, retryAfter, nil-or-blocked-error).
+//
+// On the "all actual NVIDIA candidates gated" exit paths the caller is
+// expected to return blockedError(ctx) immediately; otherwise the per-account
+// gate is local-only and never short-circuits on its own.
+func (t *nvidiaThrottleSelection) gateAccount(ctx context.Context, account *Account) (bool, time.Duration, *NVIDIAAdaptiveThrottleBlockedError) {
+	gated, retry := t.reserve(ctx, account)
+	return gated, retry, nil
 }

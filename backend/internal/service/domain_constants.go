@@ -677,6 +677,14 @@ const (
 
 	// Web Search Emulation
 	SettingKeyWebSearchEmulationConfig = "web_search_emulation_config" // JSON 配置
+
+	// NVIDIA 自适应节流（NVIDIA adaptive throttle）— 后端运行时配置 key。
+	// 仅在管理员显式启用时参与调度；默认关闭，状态 TTL / 间隔 / 短等待使用安全默认值。
+	// Task 1 仅落地设置键、解析、持久化与 typed read，Redis / 调度 / timer 留待后续 Task。
+	SettingKeyNVIDIAAdaptiveThrottleEnabled           = "nvidia_adaptive_throttle_enabled"             // bool，默认 "false"
+	SettingKeyNVIDIAAdaptiveThrottleStateTTLMinutes   = "nvidia_adaptive_throttle_state_ttl_minutes"   // int，默认 30，范围 1..1440
+	SettingKeyNVIDIAAdaptiveThrottleMaxSpacingSeconds = "nvidia_adaptive_throttle_max_spacing_seconds" // int，默认 30，范围 1..300
+	SettingKeyNVIDIAAdaptiveThrottleShortWaitMs       = "nvidia_adaptive_throttle_short_wait_ms"       // int，默认 2000，范围 0..10000
 )
 
 // SettingKeyDefaultPlatformQuotas —— 系统全局：每用户 × 平台日/周/月 USD 上限（JSON）。
