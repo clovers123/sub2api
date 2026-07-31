@@ -80,6 +80,7 @@ var nvidiaReserveScript = redis.NewScript(`
 // ARGV[5] = capacity_block_until_ms (0 – leave unchanged)
 // ARGV[6] = rate_block_until_ms      (0 – leave unchanged)
 // ARGV[7] = decay flag (1 – on success halve existing spacing when ARGV[3]==0;
+//
 //	values below nvidiaSpacingDecayFloorMs collapse to 0; 0 – keep old behavior)
 var nvidiaApplyScript = redis.NewScript(`
 	redis.replicate_commands()

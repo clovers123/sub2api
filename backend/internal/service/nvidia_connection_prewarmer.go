@@ -50,11 +50,11 @@ type NVIDIAConnectionPrewarmer struct {
 	enabled     bool
 	interval    time.Duration
 
-	stopCh   chan struct{}
-	stopOnce sync.Once
+	stopCh    chan struct{}
+	stopOnce  sync.Once
 	startOnce sync.Once
-	stopped atomic.Bool
-	wg       sync.WaitGroup
+	stopped   atomic.Bool
+	wg        sync.WaitGroup
 
 	mu       sync.Mutex
 	snapshot NVIDIAConnectionPrewarmerSnapshot
