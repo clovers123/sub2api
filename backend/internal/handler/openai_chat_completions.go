@@ -209,7 +209,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 		reqLog.Debug("openai_chat_completions.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		_ = scheduleDecision
-setOpsSelectedAccount(c, account.ID, account.Platform)
+		setOpsSelectedAccount(c, account.ID, account.Platform)
 
 		attemptCtx := h.buildAttemptCtx(c.Request.Context(), &replacementSelectionPending)
 
@@ -223,6 +223,8 @@ setOpsSelectedAccount(c, account.ID, account.Platform)
 			continue
 		}
 		if slotResult != openAISlotAcquireOK {
+			return
+		}
 			return
 		}
 
@@ -319,14 +321,14 @@ setOpsSelectedAccount(c, account.ID, account.Platform)
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
-replacementSelectionPending = true
-				reqLog.Warn("openai_chat_completions.upstream_failover_switching",
-					zap.Int64("account_id", account.ID),
-					zap.Int("upstream_status", failoverErr.StatusCode),
-					zap.Int("switch_count", switchCount),
-					zap.Int("max_switches", maxAccountSwitches),
-				)
-				continue
+					replacementSelectionPending = true
+					reqLog.Warn("openai_chat_completions.upstream_failover_switching",
+						zap.Int64("account_id", account.ID),
+						zap.Int("upstream_status", failoverErr.StatusCode),
+						zap.Int("switch_count", switchCount),
+						zap.Int("max_switches", maxAccountSwitches),
+					)
+					continue
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(reqModel), false, nil)
 				upstreamErrorAlreadyCommunicated := openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err)
