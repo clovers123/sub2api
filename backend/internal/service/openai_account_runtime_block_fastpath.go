@@ -241,6 +241,12 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	// 400 单独由 N2 降级重试路径处理。
 	if statusCode >= 500 && isNVIDIAAccountByHostname(account) {
 		recordNVIDIAUpstreamFailure(s, ctx, account, statusCode, responseBody, nvidiaReason5xxUpstream)
+
+		// P1: 连续 5xx 自动冷却 — 触发时调用 BlockAccountScheduling
+		// 短期排除坏账号，冷却后自松。阈值/窗口/冷却时间从 admin settings 热读。
+		if metrics := s.nvidiaSharedPoolMetricsForSorting.Load(); metrics != nil {
+			s.maybeCoolNVIDIAOnConsecutive5xx(ctx, account, metrics)
+		}
 	}
 	stateCtx = withTempUnschedulableModel(stateCtx, canonicalModel)
 	if s.rateLimitService != nil && len(canonicalModel) > 0 && s.rateLimitService.HandleUpstreamModelNotFound(stateCtx, account, canonicalModel[0], statusCode, responseBody) {
@@ -614,4 +620,70 @@ func (s *OpenAIGatewayService) ShouldStopOpenAIOAuth429Failover(account *Account
 	// retry window before reaching this switch point. A global storm is useful
 	// telemetry, but must not prevent trying the bounded next-account budget.
 	return failedSwitches >= openAIOAuth429MaxAccountAttempts
+}
+
+// maybeCoolNVIDIAOnConsecutive5xx 是 P1 连续 5xx 自动冷却的判定入口。
+//
+//  1. 从 admin settings（热读 DB，不重启）取出阈值、时间窗、冷却时长。
+//  2. 调用 RecordConsecutive5xx 累积同一账号的 5xx 失败 streak。
+//  3. 当 streak 数达到阈值且首末时间差仍在 window 内，将账号 BlockAccountScheduling
+//     冷却 cooldown 秒，到期后 scheduler 重新释放。
+//  4. 一次成功 RecordAccountReuse 即清零 streak，避免健康账号被持久封堵。
+//
+// 此方法仅在 fastpath N1 块（statusCode >= 500 && isNVIDIAAccountByHostname）调用，
+// 对整个 failover 链无副作用。
+func (s *OpenAIGatewayService) maybeCoolNVIDIAOnConsecutive5xx(
+	ctx context.Context,
+	account *Account,
+	metrics *NVIDIASharedConnectionPoolMetrics,
+) {
+	if s == nil || account == nil || metrics == nil {
+		return
+	}
+	if s.settingService == nil {
+		return
+	}
+
+	settings, err := s.settingService.GetAllSettings(ctx)
+	if err != nil {
+		return // fail-to-read settings → skip cooldown safely
+	}
+
+	threshold := settings.NVIDIAConsecutive5xxThreshold
+	windowSeconds := settings.NVIDIAConsecutive5xxWindowSeconds
+	cooldownSeconds := settings.NVIDIAConsecutive5xxCooldownSeconds
+
+	// Guard: reasonable defaults if DB read falls through to zero (shouldn't
+	// happen because parseSettings clamps, but be defensive).
+	if threshold <= 0 {
+		threshold = 3
+	}
+	if windowSeconds <= 0 {
+		windowSeconds = 60
+	}
+	if cooldownSeconds <= 0 {
+		cooldownSeconds = 120
+	}
+
+	reached := metrics.RecordConsecutive5xx(
+		account.ID,
+		time.Now(),
+		threshold,
+		time.Duration(windowSeconds)*time.Second,
+	)
+	if !reached {
+		return
+	}
+
+	s.BlockAccountScheduling(
+		account,
+		time.Now().Add(time.Duration(cooldownSeconds)*time.Second),
+		"nvidia_consecutive_5xx_cooldown",
+	)
+	slog.Warn("nvidia_account_cooled",
+		"account_id", account.ID,
+		"threshold", threshold,
+		"window_sec", windowSeconds,
+		"cooldown_sec", cooldownSeconds,
+	)
 }

@@ -584,6 +584,24 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyNVIDIASharedConnectionPoolEnabled] = strconv.FormatBool(settings.NVIDIASharedConnectionPoolEnabled)
 	updates[SettingKeyNVIDIASharedConnectionPoolPrewarmEnabled] = strconv.FormatBool(settings.NVIDIASharedConnectionPoolPrewarmEnabled)
 
+	threshold := settings.NVIDIAConsecutive5xxThreshold
+	if threshold < nvidiaConsecutive5xxThresholdMin || threshold > nvidiaConsecutive5xxThresholdMax {
+		threshold = 3
+	}
+	updates[SettingKeyNVIDIAConsecutive5xxThreshold] = strconv.Itoa(threshold)
+
+	windowSec := settings.NVIDIAConsecutive5xxWindowSeconds
+	if windowSec < nvidiaConsecutive5xxWindowSecMin || windowSec > nvidiaConsecutive5xxWindowSecMax {
+		windowSec = 60
+	}
+	updates[SettingKeyNVIDIAConsecutive5xxWindowSeconds] = strconv.Itoa(windowSec)
+
+	cooldownSec := settings.NVIDIAConsecutive5xxCooldownSeconds
+	if cooldownSec < nvidiaConsecutive5xxCooldownSecMin || cooldownSec > nvidiaConsecutive5xxCooldownSecMax {
+		cooldownSec = 120
+	}
+	updates[SettingKeyNVIDIAConsecutive5xxCooldownSeconds] = strconv.Itoa(cooldownSec)
+
 	return updates, nil
 }
 

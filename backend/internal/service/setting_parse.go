@@ -277,6 +277,12 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyNVIDIASharedConnectionPoolPrewarmEnabled:        "true",
 		SettingKeyNVIDIASharedConnectionPoolPrewarmIntervalSec:     "240",
 		SettingKeyNVIDIASharedConnectionPoolH2PingIdleTimeoutSec:  "0",
+
+		// NVIDIA 连续 5xx 自动冷却：3 次 / 60s 窗口 / 120s 冷却。
+		// 3 次能跳过偶发单点 5xx；60s 窗口覆盖集中爆发；120s 让 NVIDIA Worker 池有恢复机会。
+		SettingKeyNVIDIAConsecutive5xxThreshold:       "3",
+		SettingKeyNVIDIAConsecutive5xxWindowSeconds:   "60",
+		SettingKeyNVIDIAConsecutive5xxCooldownSeconds: "120",
 	}
 
 	return s.settingRepo.SetMultiple(ctx, defaults)
@@ -1035,6 +1041,25 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		nvidiaSharedPoolH2PingIdleTimeoutSecMin,
 		nvidiaSharedPoolH2PingIdleTimeoutSecMax,
 		0,
+	)
+
+	result.NVIDIAConsecutive5xxThreshold = parseIntInRange(
+		settings[SettingKeyNVIDIAConsecutive5xxThreshold],
+		nvidiaConsecutive5xxThresholdMin,
+		nvidiaConsecutive5xxThresholdMax,
+		3,
+	)
+	result.NVIDIAConsecutive5xxWindowSeconds = parseIntInRange(
+		settings[SettingKeyNVIDIAConsecutive5xxWindowSeconds],
+		nvidiaConsecutive5xxWindowSecMin,
+		nvidiaConsecutive5xxWindowSecMax,
+		60,
+	)
+	result.NVIDIAConsecutive5xxCooldownSeconds = parseIntInRange(
+		settings[SettingKeyNVIDIAConsecutive5xxCooldownSeconds],
+		nvidiaConsecutive5xxCooldownSecMin,
+		nvidiaConsecutive5xxCooldownSecMax,
+		120,
 	)
 
 	return result

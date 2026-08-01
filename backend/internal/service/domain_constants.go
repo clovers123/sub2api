@@ -693,6 +693,13 @@ const (
 	SettingKeyNVIDIASharedConnectionPoolPrewarmEnabled     = "nvidia_shared_connection_pool_prewarm_enabled"       // bool，默认 "true"
 	SettingKeyNVIDIASharedConnectionPoolPrewarmIntervalSec = "nvidia_shared_connection_pool_prewarm_interval_sec"   // int，默认 240，范围 0..86400（0 = 仅启动时预热一次）
 	SettingKeyNVIDIASharedConnectionPoolH2PingIdleTimeoutSec = "nvidia_shared_connection_pool_h2_ping_idle_timeout_sec" // int，默认 0，范围 0..600（0 = 走全局默认 15s）
+
+	// NVIDIA 连续 5xx 自动冷却 — NVIDIA 免费 API 偶发 5xx 集中爆发期间，让坏账号
+	// 主动退出轮换，避免客户端被坏账号反复截断。3 个 key 协同工作：在 window 秒内
+	// 累计达到 threshold 次 5xx 后，对该账号内存冷却 cooldown 秒，到期后自动回归。
+	SettingKeyNVIDIAConsecutive5xxThreshold      = "nvidia_consecutive_5xx_threshold"       // int，默认 3，范围 1..100
+	SettingKeyNVIDIAConsecutive5xxWindowSeconds  = "nvidia_consecutive_5xx_window_seconds"   // int，默认 60，范围 1..3600
+	SettingKeyNVIDIAConsecutive5xxCooldownSeconds = "nvidia_consecutive_5xx_cooldown_seconds" // int，默认 120，范围 1..3600
 )
 
 // SettingKeyDefaultPlatformQuotas —— 系统全局：每用户 × 平台日/周/月 USD 上限（JSON）。

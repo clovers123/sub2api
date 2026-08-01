@@ -326,6 +326,13 @@ type SystemSettings struct {
 	NVIDIASharedConnectionPoolPrewarmEnabled     bool // 预热总开关
 	NVIDIASharedConnectionPoolPrewarmIntervalSec int  // 保活间隔（秒），0..86400（0 = 仅启动预热一次）
 	NVIDIASharedConnectionPoolH2PingIdleTimeoutSec int // H2 PING 空闲超时（秒），0..600（0 = 走全局 15s）
+
+	// NVIDIA 连续 5xx 自动冷却（DB 持久化 + 热改生效；recordNVIDIAUpstreamFailure
+	// 在每次失败时实时读取，管理员修改后下一个失败请求立即按新阈值判定，无需重启）。
+	// 阈值/窗口/冷却时间共同决定坏账号退出轮换的触发条件与持续时间。
+	NVIDIAConsecutive5xxThreshold       int // 触发阈值，1..100
+	NVIDIAConsecutive5xxWindowSeconds   int // 5xx 计数窗口（秒），1..3600
+	NVIDIAConsecutive5xxCooldownSeconds int // 触发后冷却时长（秒），1..3600
 }
 
 type DefaultSubscriptionSetting struct {

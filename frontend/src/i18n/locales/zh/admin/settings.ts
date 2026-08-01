@@ -1053,6 +1053,21 @@ export default {
           loadingError: '加载 NVIDIA 共享连接池配置失败',
           restartBadge: '需要重启',
           softReloadBadge: '软重载（已有连接保持原超时）'
+        },
+        consecutive5xx: {
+          title: 'NVIDIA 连续 5xx 自动冷却',
+          description: '当某个 NVIDIA 账号在短时间内连续产生过多 5xx 错误时，自动将其短期排除出调度，冷却到期后自动回归。热重载：下一次 5xx 失败时立即按新配置判定。',
+          thresholdLabel: '连续 5xx 触发阈值',
+          thresholdHint: '时间窗内连续 5xx 失败达到该次数后，账号被短期冷却（1-100）。',
+          windowSecondsLabel: '时间窗（秒）',
+          windowSecondsHint: '连续 5xx 计数的最大时间窗口（1-3600）。窗口内第一次失败启动计时。',
+          cooldownSecondsLabel: '冷却时长（秒）',
+          cooldownSecondsHint: '账号被排除出调度的时长，到期后自动恢复（1-3600）。',
+          hotReloadBadge: '热重载',
+          hotReloadDescription: '修改后下一次 5xx 失败立即按新阈值/窗口/冷却判定生效，无需重启。',
+          saved: 'NVIDIA 连续 5xx 冷却配置已保存，下一次 5xx 失败时生效。',
+          saveFailed: '保存 NVIDIA 连续 5xx 冷却配置失败',
+          loadingError: '加载 NVIDIA 连续 5xx 冷却配置失败'
         }
       },
       rectifier: {
