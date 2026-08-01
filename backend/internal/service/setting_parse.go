@@ -987,7 +987,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	})
 
 	// NVIDIA 自适应节流：合法值保留，缺失/格式错误/越界回退默认值。
-	// 默认值与 DefaultNVIDIAAdaptiveThrottleSettings() 一致：false / 30m / 30s / 2000ms。
+	// 默认值与 DefaultNVIDIAAdaptiveThrottleSettings() 一致：true / 30m / 30s / 2000ms。
 	result.NVIDIAAdaptiveThrottleEnabled = settings[SettingKeyNVIDIAAdaptiveThrottleEnabled] == "true" // 仅 "true" 开启
 	result.NVIDIAAdaptiveThrottleStateTTLMinutes = parseIntInRange(
 		settings[SettingKeyNVIDIAAdaptiveThrottleStateTTLMinutes],
@@ -1009,7 +1009,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	)
 
 	// NVIDIA 共享连接池：合法值保留，缺失/格式错误/越界回退默认值。
-	// 默认值与 DefaultNVIDIASharedPoolSettings() 一致：false / 600 / false / 240 / 0。
+	// 默认值与 DefaultNVIDIASharedPoolSettings() 一致：true / 600 / true / 240 / 0。
 	result.NVIDIASharedConnectionPoolEnabled = settings[SettingKeyNVIDIASharedConnectionPoolEnabled] == "true"
 	result.NVIDIASharedConnectionPoolIdleConnTimeoutSec = parseIntInRange(
 		settings[SettingKeyNVIDIASharedConnectionPoolIdleConnTimeoutSec],

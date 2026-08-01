@@ -538,7 +538,7 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyAllowUserViewErrorRequests] = strconv.FormatBool(settings.AllowUserViewErrorRequests)
 
 	// NVIDIA 自适应节流：越界回退默认值（与 GetNVIDIAAdaptiveThrottleSettings / parseSettings 一致）。
-	// 默认：关闭，TTL 30m，间隔 30s，短等待 2000ms。ShortWait=0 合法（关闭短等待）。
+	// 默认：启用，TTL 30m，间隔 30s，短等待 2000ms。ShortWait=0 合法（关闭短等待）。
 	ttlMinutes := settings.NVIDIAAdaptiveThrottleStateTTLMinutes
 	if ttlMinutes < nvidiaAdaptiveThrottleStateTTLMinutesMin || ttlMinutes > nvidiaAdaptiveThrottleStateTTLMinutesMax {
 		ttlMinutes = 30
@@ -560,7 +560,7 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyNVIDIAAdaptiveThrottleEnabled] = strconv.FormatBool(settings.NVIDIAAdaptiveThrottleEnabled)
 
 	// NVIDIA 共享连接池：越界回退默认值（与 DefaultNVIDIASharedPoolSettings / parseSettings 一致）。
-	// 默认：关闭，idle 600s，prewarm 关闭，间隔 240s，h2 ping 0（走全局 15s）。
+	// 默认：启用，idle 600s，prewarm 启用，间隔 240s，h2 ping 0（走全局 15s）。
 	idleConnSec := settings.NVIDIASharedConnectionPoolIdleConnTimeoutSec
 	if idleConnSec < nvidiaSharedPoolIdleConnTimeoutSecMin || idleConnSec > nvidiaSharedPoolIdleConnTimeoutSecMax {
 		idleConnSec = 600
