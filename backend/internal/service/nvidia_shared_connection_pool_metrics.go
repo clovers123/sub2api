@@ -17,6 +17,24 @@ type NVIDIASharedConnectionPoolMetrics struct {
 	connect                       nvidiaSharedConnectionLatencyWindow
 	tlsHandshake                  nvidiaSharedConnectionLatencyWindow
 	ttfb                          nvidiaSharedConnectionLatencyWindow
+
+	// accountReuse tracks per-account reuse events so schedulers can prefer
+	// accounts whose upstream HTTP/2 connections are already warm.
+	accountReuseMu       sync.Mutex
+	accountReuseBy       map[int64]*nvidiaAccountReuseState
+}
+
+// nvidiaAccountReuseState holds per-account reuse bookkeeping for the scheduler.
+// Guarded by accountReuseMu on the parent metrics instance.
+type nvidiaAccountReuseState struct {
+	reusedTotal       int64
+	lastReuseAtNano   int64
+}
+
+// NVIDIAAccountReuseSnapshot is the read-only view of an account's reuse events.
+type NVIDIAAccountReuseSnapshot struct {
+	ReusedTotal         int64 `json:"reused_total"`
+	LastReuseAtUnixNano int64 `json:"last_reuse_at_unix_nano"`
 }
 
 type nvidiaSharedConnectionLatencyWindow struct {
@@ -88,6 +106,48 @@ func (m *NVIDIASharedConnectionPoolMetrics) RecordTLSHandshake(duration time.Dur
 func (m *NVIDIASharedConnectionPoolMetrics) RecordTTFB(duration time.Duration) {
 	if m != nil {
 		m.ttfb.record(duration)
+	}
+}
+
+// RecordAccountReuse increments the per-account reuse counter for accountID
+// and updates the latest reuse timestamp so schedulers can prefer accounts
+// whose upstream HTTP/2 connection was recently reused (warmed).
+func (m *NVIDIASharedConnectionPoolMetrics) RecordAccountReuse(accountID int64, at time.Time) {
+	if m == nil || accountID <= 0 {
+		return
+	}
+	m.accountReuseMu.Lock()
+	defer m.accountReuseMu.Unlock()
+	if m.accountReuseBy == nil {
+		m.accountReuseBy = make(map[int64]*nvidiaAccountReuseState)
+	}
+	state, ok := m.accountReuseBy[accountID]
+	if !ok {
+		state = &nvidiaAccountReuseState{}
+		m.accountReuseBy[accountID] = state
+	}
+	state.reusedTotal++
+	ts := at.UnixNano()
+	if ts > state.lastReuseAtNano {
+		state.lastReuseAtNano = ts
+	}
+}
+
+// SnapshotAccountReuse returns a point-in-time view of an account's reuse state.
+// Returns zero value if accountID was never recorded.
+func (m *NVIDIASharedConnectionPoolMetrics) SnapshotAccountReuse(accountID int64) NVIDIAAccountReuseSnapshot {
+	if m == nil || accountID <= 0 {
+		return NVIDIAAccountReuseSnapshot{}
+	}
+	m.accountReuseMu.Lock()
+	defer m.accountReuseMu.Unlock()
+	state, ok := m.accountReuseBy[accountID]
+	if !ok || state == nil {
+		return NVIDIAAccountReuseSnapshot{}
+	}
+	return NVIDIAAccountReuseSnapshot{
+		ReusedTotal:         state.reusedTotal,
+		LastReuseAtUnixNano: state.lastReuseAtNano,
 	}
 }
 
