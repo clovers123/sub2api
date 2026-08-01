@@ -1676,14 +1676,6 @@ const removeErrorCode = (code: number) => {
   }
 }
 
-const buildModelMappingObject = (): Record<string, string> | null => {
-  return buildModelMappingPayload(
-    modelRestrictionMode.value,
-    allowedModels.value,
-    modelMappings.value
-  )
-}
-
 const buildOpenAICompactModelMapping = (): Record<string, string> | null => {
   return buildModelMappingPayload('mapping', [], openAICompactModelMappings.value)
 }
@@ -1753,22 +1745,18 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
   }
 
   if (enableModelRestriction.value && !isOpenAIModelRestrictionDisabled.value) {
-    // 统一使用 model_mapping 字段
-    if (modelRestrictionMode.value === 'whitelist') {
-      // 白名单模式：将模型转换为 model_mapping 格式（key=value）
-      // 空白名单表示“支持所有模型”，需显式发送空对象以覆盖已有限制。
-      const mapping: Record<string, string> = {}
-      for (const m of allowedModels.value) {
-        mapping[m] = m
-      }
-      credentials.model_mapping = mapping
-      credentialsChanged = true
-    } else {
-      // 映射模式下空配置同样表示“支持所有模型”。
-      const modelMapping = buildModelMappingObject()
-      credentials.model_mapping = modelMapping ?? {}
-      credentialsChanged = true
-    }
+    // 统一使用 model_mapping 字段。UI 上 modelRestrictionMode 是 tab 互斥的，
+    // 但 allowedModels 和 modelMappings 两个 ref 在切换 tab 时各自保留输入数据。
+    // 这里使用 'combined' 模式合并两个字段一起发送，避免用户在两个 tab
+    // 都填了数据后只保存当前 tab 的内容导致另一份丢失。
+    // 空配置表示“支持所有模型”，需显式发送空对象以覆盖已有限制。
+    const modelMapping = buildModelMappingPayload(
+      'combined',
+      allowedModels.value,
+      modelMappings.value
+    )
+    credentials.model_mapping = modelMapping ?? {}
+    credentialsChanged = true
   }
 
   if (enableCustomErrorCodes.value) {
