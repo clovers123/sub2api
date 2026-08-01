@@ -31,15 +31,19 @@ type NVIDIASharedConnectionPoolMetrics struct {
 // nvidiaAccountReuseState holds per-account reuse bookkeeping for the scheduler.
 // Fields are atomic so the scheduler hot-path (SnapshotAccountReuse) can read
 // ReusedTotal without locking; only map access is mutex-protected.
+// recentFailCount tracks recent upstream failures (5xx/429/exhausted) to
+// down-weight accounts with degraded reliability in the sorting heat.
 type nvidiaAccountReuseState struct {
-	reusedTotal       atomic.Int64
-	lastReuseAtNano   atomic.Int64
+	reusedTotal      atomic.Int64
+	lastReuseAtNano  atomic.Int64
+	recentFailCount  atomic.Int64
 }
 
 // NVIDIAAccountReuseSnapshot is the read-only view of an account's reuse events.
 type NVIDIAAccountReuseSnapshot struct {
 	ReusedTotal         int64 `json:"reused_total"`
 	LastReuseAtUnixNano int64 `json:"last_reuse_at_unix_nano"`
+	RecentFailCount     int64 `json:"recent_fail_count"`
 }
 
 type nvidiaSharedConnectionLatencyWindow struct {
@@ -148,6 +152,31 @@ func (m *NVIDIASharedConnectionPoolMetrics) RecordAccountReuse(accountID int64, 
 	}
 }
 
+// RecordAccountFail increments the per-account recent failure counter.
+// The scheduler (nvidiaReuseHeatFor) down-weights hot accounts whose recent
+// upstream calls have failed to avoid hammering degraded accounts.
+// Failures are attenuated naturally by successful reuses which carry positive
+// heat; a single decay sweep is intentionally not implemented here — N3 keeps
+// the read path lock-free, and any account blocked by cool-down already exits
+// the candidate set before heat comparison.
+func (m *NVIDIASharedConnectionPoolMetrics) RecordAccountFail(accountID int64) {
+	if m == nil || accountID <= 0 {
+		return
+	}
+	m.accountReuseMu.Lock()
+	if m.accountReuseBy == nil {
+		m.accountReuseBy = make(map[int64]*nvidiaAccountReuseState)
+	}
+	state, ok := m.accountReuseBy[accountID]
+	if !ok {
+		state = &nvidiaAccountReuseState{}
+		m.accountReuseBy[accountID] = state
+	}
+	m.accountReuseMu.Unlock()
+
+	state.recentFailCount.Add(1)
+}
+
 // SnapshotAccountReuse returns a point-in-time view of an account's reuse state.
 // Returns zero value if accountID was never recorded.
 // Lock only for map lookup; per-account fields are read atomically so the
@@ -165,6 +194,7 @@ func (m *NVIDIASharedConnectionPoolMetrics) SnapshotAccountReuse(accountID int64
 	return NVIDIAAccountReuseSnapshot{
 		ReusedTotal:         state.reusedTotal.Load(),
 		LastReuseAtUnixNano: state.lastReuseAtNano.Load(),
+		RecentFailCount:     state.recentFailCount.Load(),
 	}
 }
 

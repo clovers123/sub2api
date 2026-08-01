@@ -220,12 +220,43 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 			}
 			return s.handleChatCompletionsErrorResponse(resp, c, account, billingModel)
 		}
+		// N2: NVIDIA 400 "Unsupported parameter(s)" → 自动解析字段名 + sjson 剥离 + 同账号重试一次。
+		// 第一次 400 时只剥离字段并重发；若重试还是 400 则按正常 failover 处理。
+		if resp.StatusCode == http.StatusBadRequest && isNVIDIAAccountByHostname(account) {
+			if fields := detectNVIDIAUnsupportedParameterError(resp.StatusCode, respBody); len(fields) > 0 {
+				retryBody, retryable, _ := tryNVIDIARetryOnUnsupportedParameter(respBody, upstreamBody)
+				if retryable {
+					_ = resp.Body.Close()
+					logNVIDIAUnsupportedParameterRetry(ctx, account, fields, "retry_attempted")
+					retryResp, retryErr := s.sendCCUpstreamRequest(ctx, c, account, targetURL, retryBody, clientStream, token, customUA, grokCacheIdentity, s.chatCompletionsHTTPUpstreamProfile(account, targetParsedURL))
+					if retryErr != nil {
+						logNVIDIAUnsupportedParameterRetry(ctx, account, fields, "retry_send_error")
+						return nil, retryErr
+					}
+					// 替换 resp 给 defer 与后续路径
+					resp = retryResp
+					if resp.StatusCode < 400 {
+						logNVIDIAUnsupportedParameterRetry(ctx, account, fields, "retry_success")
+						goto nvidiaRetrySucceeded
+					} else {
+						// 重试仍失败 → 记日志 + 走原本 failover 路径
+						logNVIDIAUnsupportedParameterRetry(ctx, account, fields, "retry_still_failed")
+						retryRespBody, retryUpstreamMsg := s.readOpenAIUpstreamError(resp)
+						if foErr := s.failoverOpenAIUpstreamHTTPError(ctx, c, account, resp, retryRespBody, retryUpstreamMsg, upstreamModel); foErr != nil {
+							return nil, foErr
+						}
+						return s.handleChatCompletionsErrorResponse(resp, c, account, billingModel)
+					}
+				}
+			}
+		}
 		if foErr := s.failoverOpenAIUpstreamHTTPError(ctx, c, account, resp, respBody, upstreamMsg, upstreamModel); foErr != nil {
 			return nil, foErr
 		}
 		return s.handleChatCompletionsErrorResponse(resp, c, account, billingModel)
 	}
 
+nvidiaRetrySucceeded:
 	if account.Platform == PlatformGrok {
 		s.updateGrokUsageFromResponse(withGrokTeamRateLimitModel(ctx, upstreamModel), account, resp.Header, resp.StatusCode)
 	}

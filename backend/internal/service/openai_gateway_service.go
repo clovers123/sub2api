@@ -462,6 +462,11 @@ type OpenAIGatewayService struct {
 	codexModelsManifestCache            codexModelsManifestCache
 	openaiCompatSessionResponses        sync.Map
 	openaiCompatAnthropicDigestSessions sync.Map
+
+	// nvidiaSharedPoolMetricsForSorting holds the NVIDIA shared-connection-pool
+	// reuse metrics so the fastpath can down-weight degraded accounts via
+	// RecordAccountFail (N3). Optional: nil when not wired (no penalty recording).
+	nvidiaSharedPoolMetricsForSorting atomic.Pointer[NVIDIASharedConnectionPoolMetrics]
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
@@ -623,6 +628,17 @@ func (s *OpenAIGatewayService) needsUpstreamChannelRestrictionCheck(ctx context.
 // ReplaceModelInBody 替换请求体中的 JSON model 字段（通用 gjson/sjson 实现）。
 func (s *OpenAIGatewayService) ReplaceModelInBody(body []byte, newModel string) []byte {
 	return ReplaceModelInBody(body, newModel)
+}
+
+// SetNVIDIASharedPoolMetricsForSorting wires the NVIDIA shared pool metrics
+// handle so the fastpath can record upstream failures for scheduling penalty
+// (N3 recordNVIDIAUpstreamFailure → RecordAccountFail → nvidiaReuseHeatFor).
+// Safe to call with nil metrics (penalty recording becomes a no-op).
+func (s *OpenAIGatewayService) SetNVIDIASharedPoolMetricsForSorting(m *NVIDIASharedConnectionPoolMetrics) {
+	if s == nil {
+		return
+	}
+	s.nvidiaSharedPoolMetricsForSorting.Store(m)
 }
 
 func (s *OpenAIGatewayService) getCodexSnapshotThrottle() *accountWriteThrottle {
