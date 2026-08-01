@@ -389,6 +389,17 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 
 		AccountSchedulingThresholds: settings.AccountSchedulingThresholds,
 		AllowUserViewErrorRequests:  settings.AllowUserViewErrorRequests,
+
+		NVIDIAAdaptiveThrottleEnabled:           settings.NVIDIAAdaptiveThrottleEnabled,
+		NVIDIAAdaptiveThrottleStateTTLMinutes:   settings.NVIDIAAdaptiveThrottleStateTTLMinutes,
+		NVIDIAAdaptiveThrottleMaxSpacingSeconds: settings.NVIDIAAdaptiveThrottleMaxSpacingSeconds,
+		NVIDIAAdaptiveThrottleShortWaitMs:       settings.NVIDIAAdaptiveThrottleShortWaitMs,
+
+		NVIDIASharedConnectionPoolEnabled:              settings.NVIDIASharedConnectionPoolEnabled,
+		NVIDIASharedConnectionPoolIdleConnTimeoutSec:    settings.NVIDIASharedConnectionPoolIdleConnTimeoutSec,
+		NVIDIASharedConnectionPoolPrewarmEnabled:        settings.NVIDIASharedConnectionPoolPrewarmEnabled,
+		NVIDIASharedConnectionPoolPrewarmIntervalSec:     settings.NVIDIASharedConnectionPoolPrewarmIntervalSec,
+		NVIDIASharedConnectionPoolH2PingIdleTimeoutSec:   settings.NVIDIASharedConnectionPoolH2PingIdleTimeoutSec,
 	}
 
 	// OpenAI fast policy (stored under a dedicated setting key)

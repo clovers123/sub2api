@@ -729,6 +729,19 @@ export interface SystemSettings {
 
   // Allow user view error requests
   allow_user_view_error_requests: boolean;
+
+  // NVIDIA adaptive throttle (DB-backed, 5s TTL hot reload)
+  nvidia_adaptive_throttle_enabled: boolean;
+  nvidia_adaptive_throttle_state_ttl_minutes: number;
+  nvidia_adaptive_throttle_max_spacing_seconds: number;
+  nvidia_adaptive_throttle_short_wait_ms: number;
+
+  // NVIDIA shared connection pool (DB-backed; restart required for changes to take effect)
+  nvidia_shared_connection_pool_enabled: boolean;
+  nvidia_shared_connection_pool_idle_conn_timeout_sec: number;
+  nvidia_shared_connection_pool_prewarm_enabled: boolean;
+  nvidia_shared_connection_pool_prewarm_interval_sec: number;
+  nvidia_shared_connection_pool_h2_ping_idle_timeout_sec: number;
 }
 
 export interface UpdateSettingsRequest {
@@ -1026,6 +1039,17 @@ export interface UpdateSettingsRequest {
   openai_fast_policy_settings?: OpenAIFastPolicySettings;
 
   allow_user_view_error_requests?: boolean;
+
+  nvidia_adaptive_throttle_enabled?: boolean;
+  nvidia_adaptive_throttle_state_ttl_minutes?: number;
+  nvidia_adaptive_throttle_max_spacing_seconds?: number;
+  nvidia_adaptive_throttle_short_wait_ms?: number;
+
+  nvidia_shared_connection_pool_enabled?: boolean;
+  nvidia_shared_connection_pool_idle_conn_timeout_sec?: number;
+  nvidia_shared_connection_pool_prewarm_enabled?: boolean;
+  nvidia_shared_connection_pool_prewarm_interval_sec?: number;
+  nvidia_shared_connection_pool_h2_ping_idle_timeout_sec?: number;
 }
 
 /**

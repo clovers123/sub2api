@@ -2401,11 +2401,11 @@ func setDefaults() {
 	viper.SetDefault("gateway.client_idle_ttl_seconds", 900)
 	// NVIDIA 上游共享 HTTP 客户端开关：默认关闭，不创建额外的连接池；
 	// 非正 idle_conn_timeout_seconds 只回退到 gateway.idle_conn_timeout_seconds。
-	viper.SetDefault("gateway.nvidia_shared_connection_pool.enabled", false)
-	viper.SetDefault("gateway.nvidia_shared_connection_pool.idle_conn_timeout_seconds", 600)
-	// NVIDIA 上游连接预热：默认关闭；间隔 0 表示仅启动时预热一次。
-	viper.SetDefault("gateway.nvidia_shared_connection_pool.prewarm_enabled", false)
-	viper.SetDefault("gateway.nvidia_shared_connection_pool.prewarm_interval_seconds", 240)
+  viper.SetDefault("gateway.nvidia_shared_connection_pool.enabled", true)
+  viper.SetDefault("gateway.nvidia_shared_connection_pool.idle_conn_timeout_seconds", 600)
+  // NVIDIA 上游连接预热：默认启动一次预热 + 周期保活；间隔 0 表示仅启动时预热一次。
+  viper.SetDefault("gateway.nvidia_shared_connection_pool.prewarm_enabled", true)
+  viper.SetDefault("gateway.nvidia_shared_connection_pool.prewarm_interval_seconds", 240)
 	viper.SetDefault("gateway.concurrency_slot_ttl_minutes", 30) // 并发槽位过期时间（支持超长请求）
 	viper.SetDefault("gateway.stream_data_interval_timeout", 180)
 	viper.SetDefault("gateway.stream_keepalive_interval", 10)

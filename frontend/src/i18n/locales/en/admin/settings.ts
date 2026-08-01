@@ -1114,6 +1114,42 @@ export default {
         saved: 'Stream timeout settings saved',
         saveFailed: 'Failed to save stream timeout settings'
       },
+      nvidia: {
+        throttle: {
+          title: 'NVIDIA Adaptive Throttle',
+          description: 'Throttle NVIDIA free-tier upstream calls adaptively to reduce 5xx errors. Hot-reload enabled (effective within 5 seconds).',
+          enabledLabel: 'Enable adaptive throttle',
+          enabledHint: 'When enabled, NVIDIA accounts are reserved based on observed outcomes (5xx/429/469), reducing Internal server error frequency on free NVIDIA quotas.',
+          stateTTLMinutesLabel: 'State TTL (minutes)',
+          stateTTLMinutesHint: 'How long classification state persists for an account/model (1-1440). Larger values tolerate transient errors; smaller values recover faster.',
+          maxSpacingSecondsLabel: 'Max spacing (seconds)',
+          maxSpacingSecondsHint: 'Maximum interval between two sends on the same account/model before forced release (1-300). Smaller values raise concurrency; larger values smooth upstream load.',
+          shortWaitMsLabel: 'Short wait (milliseconds)',
+          shortWaitMsHint: 'Brief retry-after hint surfaced to the scheduler when all NVIDIA slots are blocked (0-10000; 0 disables).',
+          saved: 'NVIDIA adaptive throttle settings saved; may take up to 5 seconds to take effect.',
+          saveFailed: 'Failed to save NVIDIA adaptive throttle settings',
+          loadingError: 'Failed to load NVIDIA adaptive throttle settings'
+        },
+        sharedPool: {
+          title: 'NVIDIA Shared Connection Pool',
+          description: 'Reuse HTTP connections to NVIDIA upstream and optionally pre-warm them. Most changes require a process restart to take effect.',
+          enabledLabel: 'Enable shared connection pool',
+          enabledHint: 'When enabled, requests to NVIDIA upstream reuse a shared HTTP transport. Existing connections continue until idle timeout; new connections adopt the new settings after restart.',
+          idleConnTimeoutSecLabel: 'Idle connection timeout (seconds)',
+          idleConnTimeoutSecHint: 'Maximum idle time before an HTTP connection is closed (0-86400; 0 falls back to gateway global default). Restart required.',
+          prewarmEnabledLabel: 'Pre-warm connections on startup',
+          prewarmEnabledHint: 'When enabled, the pool issues a lightweight probe at startup so the first user request does not pay the TLS handshake cost.',
+          prewarmIntervalSecLabel: 'Pre-warm interval (seconds)',
+          prewarmIntervalSecHint: 'Trigger a pre-warm probe every N seconds (0-86400; 0 only pre-warms once at startup). Restart required.',
+          h2PingIdleTimeoutSecLabel: 'HTTP/2 ping idle timeout (seconds)',
+          h2PingIdleTimeoutSecHint: 'Send an HTTP/2 PING before reusing an idle connection older than this many seconds (0-600; 0 falls back to 15 seconds). Restart required.',
+          saved: 'NVIDIA shared connection pool settings saved; changes take effect after a process restart.',
+          saveFailed: 'Failed to save NVIDIA shared connection pool settings',
+          loadingError: 'Failed to load NVIDIA shared connection pool settings',
+          restartBadge: 'Restart required',
+          softReloadBadge: 'Soft reload (existing connections retain old timeouts)'
+        }
+      },
       rectifier: {
         title: 'Request Rectifier',
         description: 'Automatically fix request parameters and retry when upstream returns specific errors',

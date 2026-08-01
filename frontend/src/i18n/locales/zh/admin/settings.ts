@@ -1108,6 +1108,42 @@ export default {
         saved: '流超时设置保存成功',
         saveFailed: '保存流超时设置失败'
       },
+      nvidia: {
+        throttle: {
+          title: 'NVIDIA 自适应节流',
+          description: '对 NVIDIA 免费上游调用做自适应节流，降低 5xx 出错率，5 秒内热重载生效。',
+          enabledLabel: '启用自适应节流',
+          enabledHint: '开启后，将基于 NVIDIA 账号的观测信号（5xx/429/469）保留发送窗口，从而减少免费额度的 Internal server error。',
+          stateTTLMinutesLabel: '状态 TTL（分钟）',
+          stateTTLMinutesHint: '账号/模型的分类状态保留时长（1-1440）。值越大越能容忍瞬时抖动；值越小恢复越快。',
+          maxSpacingSecondsLabel: '最大发送间隔（秒）',
+          maxSpacingSecondsHint: '同一账号/模型连续两次发送之间的最大间隔（1-300）。值越小并发越高；值越大越能平滑上游负载。',
+          shortWaitMsLabel: '短等待（毫秒）',
+          shortWaitMsHint: '所有 NVIDIA 槽位被阻挡时回传给调度器的短 Retry-After 提示（0-10000，0 表示关闭）。',
+          saved: 'NVIDIA 自适应节流配置已保存，5 秒内生效。',
+          saveFailed: '保存 NVIDIA 自适应节流配置失败',
+          loadingError: '加载 NVIDIA 自适应节流配置失败'
+        },
+        sharedPool: {
+          title: 'NVIDIA 共享连接池',
+          description: '对 NVIDIA 上游复用 HTTP 连接，可选地在启动时预热。大多数修改需要重启进程才能生效。',
+          enabledLabel: '启用共享连接池',
+          enabledHint: '开启后，发往 NVIDIA 上游的请求将复用同一 HTTP 传输。已有连接会保留至自身空闲超时；新连接在重启后采用新配置。',
+          idleConnTimeoutSecLabel: '空闲连接超时（秒）',
+          idleConnTimeoutSecHint: 'HTTP 连接最大空闲时长，超过后关闭（0-86400；0 表示回退到网关全局默认值）。需要重启。',
+          prewarmEnabledLabel: '启动时预热连接',
+          prewarmEnabledHint: '开启后，进程启动时会对上游做一次轻量探测，避免首个用户请求承担 TLS 握手开销。',
+          prewarmIntervalSecLabel: '预热间隔（秒）',
+          prewarmIntervalSecHint: '每隔 N 秒触发一次预热探测（0-86400；0 表示仅启动时预热一次）。需要重启。',
+          h2PingIdleTimeoutSecLabel: 'HTTP/2 Ping 空闲超时（秒）',
+          h2PingIdleTimeoutSecHint: '复用空闲连接前，若连接空闲超过该时长则发送 HTTP/2 PING（0-600；0 表示回退到 15 秒）。需要重启。',
+          saved: 'NVIDIA 共享连接池配置已保存，重启进程后生效。',
+          saveFailed: '保存 NVIDIA 共享连接池配置失败',
+          loadingError: '加载 NVIDIA 共享连接池配置失败',
+          restartBadge: '需要重启',
+          softReloadBadge: '软重载（已有连接保持原超时）'
+        }
+      },
       rectifier: {
         title: '请求整流器',
         description: '当上游返回特定错误时，自动修正请求参数并重试，提高请求成功率',

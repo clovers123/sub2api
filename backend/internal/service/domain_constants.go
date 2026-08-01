@@ -619,6 +619,14 @@ const (
 	SettingKeyNVIDIAAdaptiveThrottleStateTTLMinutes   = "nvidia_adaptive_throttle_state_ttl_minutes"   // int，默认 30，范围 1..1440
 	SettingKeyNVIDIAAdaptiveThrottleMaxSpacingSeconds = "nvidia_adaptive_throttle_max_spacing_seconds" // int，默认 30，范围 1..300
 	SettingKeyNVIDIAAdaptiveThrottleShortWaitMs       = "nvidia_adaptive_throttle_short_wait_ms"       // int，默认 2000，范围 0..10000
+
+	// NVIDIA 共享连接池 — DB 持久化（"软重启生效"：新连接才遵守新值；老 keepalive 连接保持到 idle 超时）。
+	// 运行时仍由 config 文件 + 启动时构造的 HTTP transport 控制；DB 仅供 UI 当前值显示与未来 reload hook 接入。
+	SettingKeyNVIDIASharedConnectionPoolEnabled             = "nvidia_shared_connection_pool_enabled"               // bool，默认 "false"
+	SettingKeyNVIDIASharedConnectionPoolIdleConnTimeoutSec  = "nvidia_shared_connection_pool_idle_conn_timeout_sec"  // int，默认 600，范围 0..86400（0 = 走 gateway 全局 idle_conn_timeout_seconds）
+	SettingKeyNVIDIASharedConnectionPoolPrewarmEnabled     = "nvidia_shared_connection_pool_prewarm_enabled"       // bool，默认 "false"
+	SettingKeyNVIDIASharedConnectionPoolPrewarmIntervalSec = "nvidia_shared_connection_pool_prewarm_interval_sec"   // int，默认 240，范围 0..86400（0 = 仅启动时预热一次）
+	SettingKeyNVIDIASharedConnectionPoolH2PingIdleTimeoutSec = "nvidia_shared_connection_pool_h2_ping_idle_timeout_sec" // int，默认 0，范围 0..600（0 = 走全局默认 15s）
 )
 
 // SettingKeyDefaultPlatformQuotas —— 系统全局：每用户 × 平台日/周/月 USD 上限（JSON）。

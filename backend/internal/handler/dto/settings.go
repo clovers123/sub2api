@@ -340,6 +340,19 @@ type SystemSettings struct {
 
 	// 允许终端用户在用量页查看自己的失败请求
 	AllowUserViewErrorRequests bool `json:"allow_user_view_error_requests"`
+
+	// NVIDIA 自适应节流（DB 持久化 + 5s TTL 热重载）。仅影响 NVIDIA 免费上游。
+	NVIDIAAdaptiveThrottleEnabled           bool `json:"nvidia_adaptive_throttle_enabled"`
+	NVIDIAAdaptiveThrottleStateTTLMinutes   int  `json:"nvidia_adaptive_throttle_state_ttl_minutes"`
+	NVIDIAAdaptiveThrottleMaxSpacingSeconds int  `json:"nvidia_adaptive_throttle_max_spacing_seconds"`
+	NVIDIAAdaptiveThrottleShortWaitMs       int  `json:"nvidia_adaptive_throttle_short_wait_ms"`
+
+	// NVIDIA 共享连接池（DB 持久化；UI 编辑需重启生效，"软重启" 仅新连接遵守新值）。
+	NVIDIASharedConnectionPoolEnabled              bool `json:"nvidia_shared_connection_pool_enabled"`
+	NVIDIASharedConnectionPoolIdleConnTimeoutSec   int  `json:"nvidia_shared_connection_pool_idle_conn_timeout_sec"`
+	NVIDIASharedConnectionPoolPrewarmEnabled      bool `json:"nvidia_shared_connection_pool_prewarm_enabled"`
+	NVIDIASharedConnectionPoolPrewarmIntervalSec   int  `json:"nvidia_shared_connection_pool_prewarm_interval_sec"`
+	NVIDIASharedConnectionPoolH2PingIdleTimeoutSec int  `json:"nvidia_shared_connection_pool_h2_ping_idle_timeout_sec"`
 }
 
 type DefaultSubscriptionSetting struct {
