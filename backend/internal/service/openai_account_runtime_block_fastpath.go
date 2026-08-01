@@ -136,6 +136,7 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 				CanonicalModel: firstCanonical(canonicalModel),
 			},
 			StatusCode:   statusCode,
+			Headers:      headers,
 			ResponseBody: responseBody,
 		}
 		if handled := s.rateLimitService.RecordNVIDIAAdaptiveThrottleOutcome(stateCtx, update); handled {
@@ -173,6 +174,7 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	// 400 单独由 N2 降级重试路径处理。
 	if statusCode >= 500 && isNVIDIAAccountByHostname(account) {
 		recordNVIDIAUpstreamFailure(s, ctx, account, statusCode, responseBody, nvidiaReason5xxUpstream)
+		recordNVIDIASingle5xxHeatPenalty(s, account)
 
 		// P1: 连续 5xx 自动冷却 — 触发时调用 BlockAccountScheduling
 		// 短期排除坏账号，冷却后自松。阈值/窗口/冷却时间从 admin settings 热读。

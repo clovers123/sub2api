@@ -1102,7 +1102,25 @@ func unsupportedProbeDelay(intervalMinutes int, retryAfterDuration time.Duration
 	return stretched
 }
 
+// ParseRetryAfter parses the RFC 6585 §4 `Retry-After` response header into a
+// non-negative time.Duration. Accepts both delta-seconds (e.g. "5") and
+// HTTP-date forms (e.g. "Wed, 21 Oct 2015 07:28:00 GMT"). Returns 0 if the
+// header is missing, empty, malformed, or in the past.
+//
+// Shared by the upstream billing probe and the NVIDIA adaptive throttle
+// 429 path so both honor upstream's explicit wait instruction identically.
+func ParseRetryAfter(header http.Header, now time.Time) time.Duration {
+	return retryAfterImpl(header, now)
+}
+
+// retryAfter remains the package-private alias preserving backward-compat
+// for existing probe callers in this file and ollama_cloud_usage.go.
+// New callers must use ParseRetryAfter.
 func retryAfter(header http.Header, now time.Time) time.Duration {
+	return retryAfterImpl(header, now)
+}
+
+func retryAfterImpl(header http.Header, now time.Time) time.Duration {
 	value := strings.TrimSpace(header.Get("Retry-After"))
 	if value == "" {
 		return 0

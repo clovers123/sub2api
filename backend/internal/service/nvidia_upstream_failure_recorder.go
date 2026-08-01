@@ -50,3 +50,32 @@ func recordNVIDIAUpstreamFailure(s *OpenAIGatewayService, ctx context.Context, a
 		)
 	}
 }
+
+// nvidiaSingle5xxHeatPenaltyCount 是单次 NVIDIA 5xx 注入的虚拟失败计数。
+//
+// 仅做热度降权, 不 BlockAccountScheduling — 真正的连续 5xx 冷却仍由
+// maybeCoolNVIDIAOnConsecutive5xx 在累计达到 threshold 时触发。
+// 成功 reuse 后 consecutiveReuseSuccess 衰减阈值已自动清零, 不产生永久压顶。
+const nvidiaSingle5xxHeatPenaltyCount = 5
+
+// recordNVIDIASingle5xxHeatPenalty 在单次 NVIDIA 5xx 错误时立即注入虚拟失败计数。
+// nvidiaReuseHeatFor: heat = ReusedTotal - 3*RecentFailCount
+// 注入 5 个虚拟失败计数后热度立即为负, sortNvidiaThrottleSchedulingOrder
+// 把该账号排到末位, 让下次 failover 走到健康账号。仅影响热度排序, 不触发账号封锁。
+func recordNVIDIASingle5xxHeatPenalty(s *OpenAIGatewayService, account *Account) {
+	if account == nil || s == nil {
+		return
+	}
+	metrics := s.nvidiaSharedPoolMetricsForSorting.Load()
+	if metrics == nil {
+		return
+	}
+	now := time.Now()
+	for i := 0; i < nvidiaSingle5xxHeatPenaltyCount; i++ {
+		metrics.RecordAccountFail(account.ID, now)
+	}
+	logger.L().Debug("nvidia single 5xx heat penalty applied",
+		zap.Int64("account_id", account.ID),
+		zap.Int("penalty_count", nvidiaSingle5xxHeatPenaltyCount),
+	)
+}
