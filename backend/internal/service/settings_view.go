@@ -317,6 +317,15 @@ type SystemSettings struct {
 	NVIDIAAdaptiveThrottleStateTTLMinutes   int  // 状态 TTL（分钟），1..1440
 	NVIDIAAdaptiveThrottleMaxSpacingSeconds int  // 最大间隔（秒），1..300
 	NVIDIAAdaptiveThrottleShortWaitMs       int  // 短等待（毫秒），0..10000（0 表示关闭）
+
+	// NVIDIA 共享连接池运行时配置（DB 持久化；UI 编辑需重启生效）。
+	// 与 config.GatewayNvidiaSharedConnectionPoolConfig 同名同序，供 UI 显示与 future reload hook。
+	// 默认值与 DefaultNVIDIASharedPoolSettings 一致；UpdateSettings 自动钳制后写回。
+	NVIDIASharedConnectionPoolEnabled             bool // 总开关
+	NVIDIASharedConnectionPoolIdleConnTimeoutSec  int  // 空闲连接超时（秒），0..86400（0 = 走 gateway 全局）
+	NVIDIASharedConnectionPoolPrewarmEnabled     bool // 预热总开关
+	NVIDIASharedConnectionPoolPrewarmIntervalSec int  // 保活间隔（秒），0..86400（0 = 仅启动预热一次）
+	NVIDIASharedConnectionPoolH2PingIdleTimeoutSec int // H2 PING 空闲超时（秒），0..600（0 = 走全局 15s）
 }
 
 type DefaultSubscriptionSetting struct {
@@ -720,13 +729,36 @@ type NVIDIAAdaptiveThrottleSettings struct {
 	ShortWait  time.Duration // 短等待：0..10000 毫秒（0 表示关闭）
 }
 
-// DefaultNVIDIAAdaptiveThrottleSettings 返回默认的 NVIDIA 自适应节流配置（仅关闭）。
+// DefaultNVIDIAAdaptiveThrottleSettings 返回默认的 NVIDIA 自适应节流配置（启用）。
 // 默认值与 InitializeDefaultSettings 中持久化的字符串保持一致，避免读到 0 值。
 func DefaultNVIDIAAdaptiveThrottleSettings() *NVIDIAAdaptiveThrottleSettings {
 	return &NVIDIAAdaptiveThrottleSettings{
-		Enabled:    false,
+		Enabled:    true,
 		StateTTL:   30 * time.Minute,
 		MaxSpacing: 30 * time.Second,
 		ShortWait:  2000 * time.Millisecond,
+	}
+}
+
+// NVIDIASharedPoolSettings 是 NVIDIA 共享连接池的 typed 视图（service 层用）。
+// 字段语义与 config.GatewayNvidiaSharedConnectionPoolConfig 同名同序；DB 持久化。
+type NVIDIASharedPoolSettings struct {
+	Enabled             bool
+	IdleConnTimeoutSec  int
+	PrewarmEnabled      bool
+	PrewarmIntervalSec  int
+	H2PingIdleTimeoutSec int
+}
+
+// DefaultNVIDIASharedPoolSettings 返回默认的 NVIDIA 共享连接池配置。
+// 默认值与 InitializeDefaultSettings 中持久化的字符串保持一致，避免读到 0 值；
+// 也与 config.example.yaml 中 nvidia_shared_connection_pool 段默认值一致。
+func DefaultNVIDIASharedPoolSettings() *NVIDIASharedPoolSettings {
+	return &NVIDIASharedPoolSettings{
+		Enabled:              true,
+		IdleConnTimeoutSec:   600,
+		PrewarmEnabled:       true,
+		PrewarmIntervalSec:   240,
+		H2PingIdleTimeoutSec: 0,
 	}
 }

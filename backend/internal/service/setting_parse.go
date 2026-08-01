@@ -262,13 +262,21 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 
 		SettingKeyAllowUserViewErrorRequests: "false",
 
-		// NVIDIA 自适应节流（Task 1：仅落地设置键与持久化，运行时待后续 Task）。
-		// 默认值与 DefaultNVIDIAAdaptiveThrottleSettings() 一致：关闭，TTL 30m，
+		// NVIDIA 自适应节流（DB-backed，5s TTL 热重载）。
+		// 默认值与 DefaultNVIDIAAdaptiveThrottleSettings() 一致：启用，TTL 30m，
 		// 间隔 30s，短等待 2000ms。避免 GetNVIDIAAdaptiveThrottleSettings 读到 0 值。
-		SettingKeyNVIDIAAdaptiveThrottleEnabled:           "false",
+		SettingKeyNVIDIAAdaptiveThrottleEnabled:           "true",
 		SettingKeyNVIDIAAdaptiveThrottleStateTTLMinutes:   "30",
 		SettingKeyNVIDIAAdaptiveThrottleMaxSpacingSeconds: "30",
 		SettingKeyNVIDIAAdaptiveThrottleShortWaitMs:       "2000",
+
+		// NVIDIA 共享连接池：与 DefaultNVIDIASharedPoolSettings 一致。
+		// 默认启用；idle 600s 走 gateway 全局默认；prewarm 启用；间隔 240s；h2 ping 0 走全局 15s。
+		SettingKeyNVIDIASharedConnectionPoolEnabled:               "true",
+		SettingKeyNVIDIASharedConnectionPoolIdleConnTimeoutSec:    "600",
+		SettingKeyNVIDIASharedConnectionPoolPrewarmEnabled:        "true",
+		SettingKeyNVIDIASharedConnectionPoolPrewarmIntervalSec:     "240",
+		SettingKeyNVIDIASharedConnectionPoolH2PingIdleTimeoutSec:  "0",
 	}
 
 	return s.settingRepo.SetMultiple(ctx, defaults)
@@ -1004,6 +1012,29 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		nvidiaAdaptiveThrottleShortWaitMsMin,
 		nvidiaAdaptiveThrottleShortWaitMsMax,
 		2000,
+	)
+
+	// NVIDIA 共享连接池：合法值保留，缺失/格式错误/越界回退默认值。
+	// 默认值与 DefaultNVIDIASharedPoolSettings() 一致：false / 600 / false / 240 / 0。
+	result.NVIDIASharedConnectionPoolEnabled = settings[SettingKeyNVIDIASharedConnectionPoolEnabled] == "true"
+	result.NVIDIASharedConnectionPoolIdleConnTimeoutSec = parseIntInRange(
+		settings[SettingKeyNVIDIASharedConnectionPoolIdleConnTimeoutSec],
+		nvidiaSharedPoolIdleConnTimeoutSecMin,
+		nvidiaSharedPoolIdleConnTimeoutSecMax,
+		600,
+	)
+	result.NVIDIASharedConnectionPoolPrewarmEnabled = settings[SettingKeyNVIDIASharedConnectionPoolPrewarmEnabled] == "true"
+	result.NVIDIASharedConnectionPoolPrewarmIntervalSec = parseIntInRange(
+		settings[SettingKeyNVIDIASharedConnectionPoolPrewarmIntervalSec],
+		nvidiaSharedPoolPrewarmIntervalSecMin,
+		nvidiaSharedPoolPrewarmIntervalSecMax,
+		240,
+	)
+	result.NVIDIASharedConnectionPoolH2PingIdleTimeoutSec = parseIntInRange(
+		settings[SettingKeyNVIDIASharedConnectionPoolH2PingIdleTimeoutSec],
+		nvidiaSharedPoolH2PingIdleTimeoutSecMin,
+		nvidiaSharedPoolH2PingIdleTimeoutSecMax,
+		0,
 	)
 
 	return result

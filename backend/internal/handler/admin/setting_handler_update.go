@@ -379,6 +379,19 @@ type UpdateSettingsRequest struct {
 	AuthSourceDingTalkPlatformQuotas map[string]*service.DefaultPlatformQuotaSetting `json:"auth_source_default_dingtalk_platform_quotas"`
 
 	AllowUserViewErrorRequests *bool `json:"allow_user_view_error_requests"`
+
+	// NVIDIA 自适应节流：指针类型表示省略则保持前值。
+	NVIDIAAdaptiveThrottleEnabled           *bool `json:"nvidia_adaptive_throttle_enabled"`
+	NVIDIAAdaptiveThrottleStateTTLMinutes   *int  `json:"nvidia_adaptive_throttle_state_ttl_minutes"`
+	NVIDIAAdaptiveThrottleMaxSpacingSeconds *int `json:"nvidia_adaptive_throttle_max_spacing_seconds"`
+	NVIDIAAdaptiveThrottleShortWaitMs       *int  `json:"nvidia_adaptive_throttle_short_wait_ms"`
+
+	// NVIDIA 共享连接池：指针类型表示省略则保持前值。需重启生效。
+	NVIDIASharedConnectionPoolEnabled              *bool `json:"nvidia_shared_connection_pool_enabled"`
+	NVIDIASharedConnectionPoolIdleConnTimeoutSec    *int  `json:"nvidia_shared_connection_pool_idle_conn_timeout_sec"`
+	NVIDIASharedConnectionPoolPrewarmEnabled        *bool `json:"nvidia_shared_connection_pool_prewarm_enabled"`
+	NVIDIASharedConnectionPoolPrewarmIntervalSec    *int  `json:"nvidia_shared_connection_pool_prewarm_interval_sec"`
+	NVIDIASharedConnectionPoolH2PingIdleTimeoutSec  *int  `json:"nvidia_shared_connection_pool_h2_ping_idle_timeout_sec"`
 }
 
 // UpdateSettings 更新系统设置
@@ -1653,6 +1666,60 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.AllowUserViewErrorRequests
 		}(),
+		NVIDIAAdaptiveThrottleEnabled: func() bool {
+			if req.NVIDIAAdaptiveThrottleEnabled != nil {
+				return *req.NVIDIAAdaptiveThrottleEnabled
+			}
+			return previousSettings.NVIDIAAdaptiveThrottleEnabled
+		}(),
+		NVIDIAAdaptiveThrottleStateTTLMinutes: func() int {
+			if req.NVIDIAAdaptiveThrottleStateTTLMinutes != nil {
+				return *req.NVIDIAAdaptiveThrottleStateTTLMinutes
+			}
+			return previousSettings.NVIDIAAdaptiveThrottleStateTTLMinutes
+		}(),
+		NVIDIAAdaptiveThrottleMaxSpacingSeconds: func() int {
+			if req.NVIDIAAdaptiveThrottleMaxSpacingSeconds != nil {
+				return *req.NVIDIAAdaptiveThrottleMaxSpacingSeconds
+			}
+			return previousSettings.NVIDIAAdaptiveThrottleMaxSpacingSeconds
+		}(),
+		NVIDIAAdaptiveThrottleShortWaitMs: func() int {
+			if req.NVIDIAAdaptiveThrottleShortWaitMs != nil {
+				return *req.NVIDIAAdaptiveThrottleShortWaitMs
+			}
+			return previousSettings.NVIDIAAdaptiveThrottleShortWaitMs
+		}(),
+		NVIDIASharedConnectionPoolEnabled: func() bool {
+			if req.NVIDIASharedConnectionPoolEnabled != nil {
+				return *req.NVIDIASharedConnectionPoolEnabled
+			}
+			return previousSettings.NVIDIASharedConnectionPoolEnabled
+		}(),
+		NVIDIASharedConnectionPoolIdleConnTimeoutSec: func() int {
+			if req.NVIDIASharedConnectionPoolIdleConnTimeoutSec != nil {
+				return *req.NVIDIASharedConnectionPoolIdleConnTimeoutSec
+			}
+			return previousSettings.NVIDIASharedConnectionPoolIdleConnTimeoutSec
+		}(),
+		NVIDIASharedConnectionPoolPrewarmEnabled: func() bool {
+			if req.NVIDIASharedConnectionPoolPrewarmEnabled != nil {
+				return *req.NVIDIASharedConnectionPoolPrewarmEnabled
+			}
+			return previousSettings.NVIDIASharedConnectionPoolPrewarmEnabled
+		}(),
+		NVIDIASharedConnectionPoolPrewarmIntervalSec: func() int {
+			if req.NVIDIASharedConnectionPoolPrewarmIntervalSec != nil {
+				return *req.NVIDIASharedConnectionPoolPrewarmIntervalSec
+			}
+			return previousSettings.NVIDIASharedConnectionPoolPrewarmIntervalSec
+		}(),
+		NVIDIASharedConnectionPoolH2PingIdleTimeoutSec: func() int {
+			if req.NVIDIASharedConnectionPoolH2PingIdleTimeoutSec != nil {
+				return *req.NVIDIASharedConnectionPoolH2PingIdleTimeoutSec
+			}
+			return previousSettings.NVIDIASharedConnectionPoolH2PingIdleTimeoutSec
+		}(),
 		OpsMonitoringEnabled: func() bool {
 			if req.OpsMonitoringEnabled != nil {
 				return *req.OpsMonitoringEnabled
@@ -2378,6 +2445,17 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		CyberSessionBlockTTLSeconds: updatedSettings.CyberSessionBlockTTLSeconds,
 		AccountSchedulingThresholds: updatedSettings.AccountSchedulingThresholds,
 		AllowUserViewErrorRequests:  updatedSettings.AllowUserViewErrorRequests,
+
+		NVIDIAAdaptiveThrottleEnabled:           updatedSettings.NVIDIAAdaptiveThrottleEnabled,
+		NVIDIAAdaptiveThrottleStateTTLMinutes:   updatedSettings.NVIDIAAdaptiveThrottleStateTTLMinutes,
+		NVIDIAAdaptiveThrottleMaxSpacingSeconds: updatedSettings.NVIDIAAdaptiveThrottleMaxSpacingSeconds,
+		NVIDIAAdaptiveThrottleShortWaitMs:       updatedSettings.NVIDIAAdaptiveThrottleShortWaitMs,
+
+		NVIDIASharedConnectionPoolEnabled:              updatedSettings.NVIDIASharedConnectionPoolEnabled,
+		NVIDIASharedConnectionPoolIdleConnTimeoutSec:    updatedSettings.NVIDIASharedConnectionPoolIdleConnTimeoutSec,
+		NVIDIASharedConnectionPoolPrewarmEnabled:        updatedSettings.NVIDIASharedConnectionPoolPrewarmEnabled,
+		NVIDIASharedConnectionPoolPrewarmIntervalSec:     updatedSettings.NVIDIASharedConnectionPoolPrewarmIntervalSec,
+		NVIDIASharedConnectionPoolH2PingIdleTimeoutSec:   updatedSettings.NVIDIASharedConnectionPoolH2PingIdleTimeoutSec,
 	}
 	if fastPolicy, err := h.settingService.GetOpenAIFastPolicySettings(c.Request.Context()); err != nil {
 		slog.Error("openai_fast_policy_settings_get_failed", "error", err)

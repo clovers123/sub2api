@@ -453,7 +453,10 @@ gateway:
   # when enabled, a cross-account shared NVIDIA cache key is used; when disabled,
   # existing per-account transport/cache behavior is preserved (no separate pool).
   nvidia_shared_connection_pool:
-    enabled: false
+    # 默认启用跨账号共享 NVIDIA HTTP 客户端缓存键，减少 TCP+TLS+H2 握手开销。
+    # Cross-account shared NVIDIA HTTP client cache key is enabled by default to reduce
+    # TCP+TLS+H2 handshake overhead. 关闭 (false) 时保持 per-account transport/cache 行为。
+    enabled: true
     # 非正值（0 / 负数）只回退到 gateway.idle_conn_timeout_seconds。
     # Non-positive (0 / negative) values fall back only to gateway.idle_conn_timeout_seconds.
     idle_conn_timeout_seconds: 600
@@ -462,7 +465,7 @@ gateway:
     # NVIDIA upstream connection prewarming: one warm-up at startup plus periodic
     # keepalive rounds (effective only when enabled=true). Prewarm requests carry no
     # credentials; one probe per distinct host+proxy completes TCP+TLS+H2 setup.
-    prewarm_enabled: false
+    prewarm_enabled: true
     # 周期保活间隔（秒）；0 表示仅启动时预热一次，不启动周期保活。
     # Keepalive interval in seconds; 0 means prewarm once at startup with no ticker.
     prewarm_interval_seconds: 240

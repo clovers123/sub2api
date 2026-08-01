@@ -1193,6 +1193,16 @@ const (
 	nvidiaAdaptiveThrottleShortWaitMsMax       = 10000
 )
 
+// NVIDIA 共享连接池边界常量。集中维护以便与前端 / 文档对齐。
+const (
+	nvidiaSharedPoolIdleConnTimeoutSecMin   = 0
+	nvidiaSharedPoolIdleConnTimeoutSecMax   = 86400
+	nvidiaSharedPoolPrewarmIntervalSecMin   = 0
+	nvidiaSharedPoolPrewarmIntervalSecMax   = 86400
+	nvidiaSharedPoolH2PingIdleTimeoutSecMin = 0
+	nvidiaSharedPoolH2PingIdleTimeoutSecMax = 600
+)
+
 // GetNVIDIAAdaptiveThrottleSettings 读取 NVIDIA 自适应节流运行时配置（typed）。
 //
 // 实现要点：

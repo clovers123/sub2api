@@ -6218,6 +6218,233 @@
           </div>
         </div>
         </div>
+
+        <!-- NVIDIA Adaptive Throttle -->
+        <div v-show="activeTab === 'gateway'" class="card" data-testid="nvidia-throttle-card">
+          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              {{ t("admin.settings.nvidia.throttle.title") }}
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              {{ t("admin.settings.nvidia.throttle.description") }}
+            </p>
+          </div>
+          <div class="space-y-5 p-6">
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="font-medium text-gray-900 dark:text-white">
+                  {{ t("admin.settings.nvidia.throttle.enabledLabel") }}
+                </label>
+                <p class="text-sm text-gray-500 dark:text-gray-400">
+                  {{ t("admin.settings.nvidia.throttle.enabledHint") }}
+                </p>
+              </div>
+              <label class="toggle">
+                <input
+                  v-model="form.nvidia_adaptive_throttle_enabled"
+                  type="checkbox"
+                  data-testid="nvidia-throttle-enabled"
+                />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+
+            <div
+              v-if="form.nvidia_adaptive_throttle_enabled"
+              class="space-y-4 border-t border-gray-100 pt-4 dark:border-dark-700"
+            >
+              <div>
+                <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t("admin.settings.nvidia.throttle.stateTTLMinutesLabel") }}
+                </label>
+                <input
+                  v-model.number="form.nvidia_adaptive_throttle_state_ttl_minutes"
+                  type="number"
+                  min="1"
+                  max="1440"
+                  class="input max-w-xs"
+                  data-testid="nvidia-throttle-state-ttl-minutes"
+                />
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t("admin.settings.nvidia.throttle.stateTTLMinutesHint") }}
+                </p>
+              </div>
+
+              <div>
+                <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t("admin.settings.nvidia.throttle.maxSpacingSecondsLabel") }}
+                </label>
+                <input
+                  v-model.number="form.nvidia_adaptive_throttle_max_spacing_seconds"
+                  type="number"
+                  min="1"
+                  max="300"
+                  class="input max-w-xs"
+                  data-testid="nvidia-throttle-max-spacing-seconds"
+                />
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t("admin.settings.nvidia.throttle.maxSpacingSecondsHint") }}
+                </p>
+              </div>
+
+              <div>
+                <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t("admin.settings.nvidia.throttle.shortWaitMsLabel") }}
+                </label>
+                <input
+                  v-model.number="form.nvidia_adaptive_throttle_short_wait_ms"
+                  type="number"
+                  min="0"
+                  max="10000"
+                  class="input max-w-xs"
+                  data-testid="nvidia-throttle-short-wait-ms"
+                />
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t("admin.settings.nvidia.throttle.shortWaitMsHint") }}
+                </p>
+              </div>
+            </div>
+
+            <p class="text-xs text-gray-400 dark:text-gray-500">
+              {{
+                form.nvidia_adaptive_throttle_enabled
+                  ? t("admin.settings.nvidia.throttle.enabledHint")
+                  : t("admin.settings.nvidia.throttle.description")
+              }}
+            </p>
+          </div>
+        </div>
+        <!-- /NVIDIA Adaptive Throttle -->
+
+        <!-- NVIDIA Shared Connection Pool -->
+        <div v-show="activeTab === 'gateway'" class="card" data-testid="nvidia-shared-pool-card">
+          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              {{ t("admin.settings.nvidia.sharedPool.title") }}
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              {{ t("admin.settings.nvidia.sharedPool.description") }}
+            </p>
+          </div>
+          <div class="space-y-5 p-6">
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="font-medium text-gray-900 dark:text-white">
+                  {{ t("admin.settings.nvidia.sharedPool.enabledLabel") }}
+                </label>
+                <p class="text-sm text-gray-500 dark:text-gray-400">
+                  {{ t("admin.settings.nvidia.sharedPool.enabledHint") }}
+                </p>
+              </div>
+              <label class="toggle">
+                <input
+                  v-model="form.nvidia_shared_connection_pool_enabled"
+                  type="checkbox"
+                  data-testid="nvidia-shared-pool-enabled"
+                />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+
+            <div
+              v-if="form.nvidia_shared_connection_pool_enabled"
+              class="space-y-4 border-t border-gray-100 pt-4 dark:border-dark-700"
+            >
+              <div>
+                <ul class="mb-2 flex flex-wrap gap-2 text-xs">
+                  <li class="rounded bg-amber-50 px-2 py-1 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                    {{ t("admin.settings.nvidia.sharedPool.softReloadBadge") }}
+                  </li>
+                </ul>
+                <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t("admin.settings.nvidia.sharedPool.idleConnTimeoutSecLabel") }}
+                </label>
+                <input
+                  v-model.number="form.nvidia_shared_connection_pool_idle_conn_timeout_sec"
+                  type="number"
+                  min="0"
+                  max="86400"
+                  class="input max-w-xs"
+                  data-testid="nvidia-shared-pool-idle-timeout-sec"
+                />
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t("admin.settings.nvidia.sharedPool.idleConnTimeoutSecHint") }}
+                </p>
+              </div>
+
+              <div>
+                <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t("admin.settings.nvidia.sharedPool.prewarmEnabledLabel") }}
+                </label>
+                <label class="toggle">
+                  <input
+                    v-model="form.nvidia_shared_connection_pool_prewarm_enabled"
+                    type="checkbox"
+                    data-testid="nvidia-shared-pool-prewarm-enabled"
+                  />
+                  <span class="toggle-slider"></span>
+                </label>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t("admin.settings.nvidia.sharedPool.prewarmEnabledHint") }}
+                </p>
+              </div>
+
+              <div v-if="form.nvidia_shared_connection_pool_prewarm_enabled">
+                <ul class="mb-2 flex flex-wrap gap-2 text-xs">
+                  <li class="rounded bg-amber-50 px-2 py-1 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                    {{ t("admin.settings.nvidia.sharedPool.restartBadge") }}
+                  </li>
+                </ul>
+                <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t("admin.settings.nvidia.sharedPool.prewarmIntervalSecLabel") }}
+                </label>
+                <input
+                  v-model.number="form.nvidia_shared_connection_pool_prewarm_interval_sec"
+                  type="number"
+                  min="0"
+                  max="86400"
+                  class="input max-w-xs"
+                  data-testid="nvidia-shared-pool-prewarm-interval-sec"
+                />
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t("admin.settings.nvidia.sharedPool.prewarmIntervalSecHint") }}
+                </p>
+              </div>
+
+              <div>
+                <ul class="mb-2 flex flex-wrap gap-2 text-xs">
+                  <li class="rounded bg-amber-50 px-2 py-1 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                    {{ t("admin.settings.nvidia.sharedPool.restartBadge") }}
+                  </li>
+                </ul>
+                <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t("admin.settings.nvidia.sharedPool.h2PingIdleTimeoutSecLabel") }}
+                </label>
+                <input
+                  v-model.number="form.nvidia_shared_connection_pool_h2_ping_idle_timeout_sec"
+                  type="number"
+                  min="0"
+                  max="600"
+                  class="input max-w-xs"
+                  data-testid="nvidia-shared-pool-h2-ping-idle-timeout-sec"
+                />
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t("admin.settings.nvidia.sharedPool.h2PingIdleTimeoutSecHint") }}
+                </p>
+              </div>
+            </div>
+
+            <p class="text-xs text-gray-400 dark:text-gray-500">
+              {{
+                form.nvidia_shared_connection_pool_enabled
+                  ? t("admin.settings.nvidia.sharedPool.enabledHint")
+                  : t("admin.settings.nvidia.sharedPool.description")
+              }}
+            </p>
+          </div>
+        </div>
+        <!-- /NVIDIA Shared Connection Pool -->
+
         <!-- /Tab: Gateway — Claude Code, Scheduling -->
 
         <!-- Tab: General -->
@@ -9782,6 +10009,17 @@ const form = reactive<SettingsForm>({
   affiliate_enabled: false,
   // Allow user view error requests
   allow_user_view_error_requests: false,
+  // NVIDIA adaptive throttle (DB-backed, 5s TTL hot reload)
+  nvidia_adaptive_throttle_enabled: false,
+  nvidia_adaptive_throttle_state_ttl_minutes: 30,
+  nvidia_adaptive_throttle_max_spacing_seconds: 30,
+  nvidia_adaptive_throttle_short_wait_ms: 2000,
+
+  nvidia_shared_connection_pool_enabled: false,
+  nvidia_shared_connection_pool_idle_conn_timeout_sec: 600,
+  nvidia_shared_connection_pool_prewarm_enabled: false,
+  nvidia_shared_connection_pool_prewarm_interval_sec: 240,
+  nvidia_shared_connection_pool_h2_ping_idle_timeout_sec: 0,
 });
 
 // 人机验证 UI 状态：单卡片「总开关 + 服务商单选」，落库仍是三个独立
@@ -11438,6 +11676,29 @@ async function saveSettings() {
       // Affiliate (邀请返利) feature switch
       affiliate_enabled: form.affiliate_enabled,
       allow_user_view_error_requests: form.allow_user_view_error_requests,
+      nvidia_adaptive_throttle_enabled: form.nvidia_adaptive_throttle_enabled,
+      nvidia_adaptive_throttle_state_ttl_minutes: Number(
+        form.nvidia_adaptive_throttle_state_ttl_minutes,
+      ),
+      nvidia_adaptive_throttle_max_spacing_seconds: Number(
+        form.nvidia_adaptive_throttle_max_spacing_seconds,
+      ),
+      nvidia_adaptive_throttle_short_wait_ms: Number(
+        form.nvidia_adaptive_throttle_short_wait_ms,
+      ),
+      nvidia_shared_connection_pool_enabled:
+        form.nvidia_shared_connection_pool_enabled,
+      nvidia_shared_connection_pool_idle_conn_timeout_sec: Number(
+        form.nvidia_shared_connection_pool_idle_conn_timeout_sec,
+      ),
+      nvidia_shared_connection_pool_prewarm_enabled:
+        form.nvidia_shared_connection_pool_prewarm_enabled,
+      nvidia_shared_connection_pool_prewarm_interval_sec: Number(
+        form.nvidia_shared_connection_pool_prewarm_interval_sec,
+      ),
+      nvidia_shared_connection_pool_h2_ping_idle_timeout_sec: Number(
+        form.nvidia_shared_connection_pool_h2_ping_idle_timeout_sec,
+      ),
     };
 
     // 仅当 openai_fast_policy_settings 已成功从后端加载时才回写，

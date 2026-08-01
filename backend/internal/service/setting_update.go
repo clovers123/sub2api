@@ -561,6 +561,29 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 
 	updates[SettingKeyNVIDIAAdaptiveThrottleEnabled] = strconv.FormatBool(settings.NVIDIAAdaptiveThrottleEnabled)
 
+	// NVIDIA 共享连接池：越界回退默认值（与 DefaultNVIDIASharedPoolSettings / parseSettings 一致）。
+	// 默认：关闭，idle 600s，prewarm 关闭，间隔 240s，h2 ping 0（走全局 15s）。
+	idleConnSec := settings.NVIDIASharedConnectionPoolIdleConnTimeoutSec
+	if idleConnSec < nvidiaSharedPoolIdleConnTimeoutSecMin || idleConnSec > nvidiaSharedPoolIdleConnTimeoutSecMax {
+		idleConnSec = 600
+	}
+	updates[SettingKeyNVIDIASharedConnectionPoolIdleConnTimeoutSec] = strconv.Itoa(idleConnSec)
+
+	prewarmIntervalSec := settings.NVIDIASharedConnectionPoolPrewarmIntervalSec
+	if prewarmIntervalSec < nvidiaSharedPoolPrewarmIntervalSecMin || prewarmIntervalSec > nvidiaSharedPoolPrewarmIntervalSecMax {
+		prewarmIntervalSec = 240
+	}
+	updates[SettingKeyNVIDIASharedConnectionPoolPrewarmIntervalSec] = strconv.Itoa(prewarmIntervalSec)
+
+	h2PingSec := settings.NVIDIASharedConnectionPoolH2PingIdleTimeoutSec
+	if h2PingSec < nvidiaSharedPoolH2PingIdleTimeoutSecMin || h2PingSec > nvidiaSharedPoolH2PingIdleTimeoutSecMax {
+		h2PingSec = 0
+	}
+	updates[SettingKeyNVIDIASharedConnectionPoolH2PingIdleTimeoutSec] = strconv.Itoa(h2PingSec)
+
+	updates[SettingKeyNVIDIASharedConnectionPoolEnabled] = strconv.FormatBool(settings.NVIDIASharedConnectionPoolEnabled)
+	updates[SettingKeyNVIDIASharedConnectionPoolPrewarmEnabled] = strconv.FormatBool(settings.NVIDIASharedConnectionPoolPrewarmEnabled)
+
 	return updates, nil
 }
 
