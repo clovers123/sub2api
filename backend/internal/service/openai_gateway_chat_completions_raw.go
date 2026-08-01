@@ -142,10 +142,14 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	}
 
 	if clientStream {
-		var usageErr error
-		upstreamBody, usageErr = ensureOpenAIChatStreamUsage(upstreamBody)
-		if usageErr != nil {
-			return nil, fmt.Errorf("enable stream usage: %w", usageErr)
+		// NVIDIA 免费 API 对 stream_options.include_usage=true 支持不稳定（多余成本、
+		// 某些模型会报错）。非 NVIDIA 才走强制注入；NVIDIA 保留客户端原值。
+		if !isNVIDIAAccountByHostname(account) {
+			var usageErr error
+			upstreamBody, usageErr = ensureOpenAIChatStreamUsage(upstreamBody)
+			if usageErr != nil {
+				return nil, fmt.Errorf("enable stream usage: %w", usageErr)
+			}
 		}
 	}
 	if account.Platform == PlatformGrok {
