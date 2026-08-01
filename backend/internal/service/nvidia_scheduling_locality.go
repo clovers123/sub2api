@@ -170,12 +170,17 @@ func sameNvidiaSortBucket(a, b *Account, metrics *NVIDIASharedConnectionPoolMetr
 	return nvidiaReuseHeatFor(a, metrics) == nvidiaReuseHeatFor(b, metrics)
 }
 
-// nvidiaReuseHeatFor returns a comparable heat scalar for an account:
-// accounts with positive reuse history report reusedTotal (lower heat sorts
-// after higher heat). Future enhancements may add recency weighting.
+// nvidiaReuseHeatFor returns a comparable heat scalar for an account.
+// Accounts with more reuse history (positive heat) sort after accounts with
+// less reuse in sortNvidiaThrottleSchedulingOrder. Recent upstream failures
+// (RecordAccountFail) subtract from the heat so the scheduler stops hot-listing
+// degraded accounts even when their reuse count is high.
+// Penalty factor 3 ensures a single failure meaningfully overrides reuse bias
+// (`weight = reusedTotal - recentFailCount*3`).
 func nvidiaReuseHeatFor(a *Account, metrics *NVIDIASharedConnectionPoolMetrics) int64 {
 	if a == nil || metrics == nil {
 		return 0
 	}
-	return metrics.SnapshotAccountReuse(a.ID).ReusedTotal
+	snap := metrics.SnapshotAccountReuse(a.ID)
+	return snap.ReusedTotal - snap.RecentFailCount*3
 }
