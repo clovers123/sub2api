@@ -72,6 +72,12 @@ type OpsService struct {
 	// 立即同步到调度热路径读取的内存缓存，避免下次请求才能感知新值。
 	quotaAutoPauseSink func(OpsOpenAIAccountQuotaAutoPauseSettings)
 
+	// NVIDIA 专属运行时指标的三个数据源，由 wire 在启动期注入。
+	// 任一字段为 nil 表示该数据源未启用 / 未构造（不影响其他字段填充）。
+	nvidiaThrottleSource    *RateLimitService
+	nvidiaPoolMetricsSource *NVIDIASharedConnectionPoolMetrics
+	nvidiaPrewarmerSource   *NVIDIAConnectionPrewarmer
+
 	// Published snapshots are immutable. Gateway reads are lock-free; the mutex
 	// only serializes startup and administrative updates.
 	runtimeSettings   atomic.Pointer[opsRuntimeSettingsSnapshot]
@@ -108,6 +114,23 @@ func (s *OpsService) SetOpenAIQuotaAutoPauseSettingsSink(sink func(OpsOpenAIAcco
 		return
 	}
 	s.quotaAutoPauseSink = sink
+}
+
+// SetNVIDIAMetricsSources 注入 OpsService 的 NVIDIA 专属指标数据源。
+// 任一参数可为 nil（对应数据源未启用或未构造），GetDashboardOverview 在
+// 渲染时按 nil 跳过该字段，不影响其他 NVIDIA 字段或主路径 SLA。
+//
+// 数据源约束：
+//   - rateLimit: 必须为同一进程的 RateLimitService（其 nvidiaMetrics 在 #1 启用时即初始化）
+//   - poolMetrics: 共享连接池由 SettingsService 构造时一同初始化
+//   - prewarmer: NVIDIAConnectionPrewarmer 由 wire 注入 cmd/server
+func (s *OpsService) SetNVIDIAMetricsSources(rateLimit *RateLimitService, poolMetrics *NVIDIASharedConnectionPoolMetrics, prewarmer *NVIDIAConnectionPrewarmer) {
+	if s == nil {
+		return
+	}
+	s.nvidiaThrottleSource = rateLimit
+	s.nvidiaPoolMetricsSource = poolMetrics
+	s.nvidiaPrewarmerSource = prewarmer
 }
 
 func NewOpsService(

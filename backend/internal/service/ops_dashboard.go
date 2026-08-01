@@ -67,6 +67,21 @@ func (s *OpsService) GetDashboardOverview(ctx context.Context, filter *OpsDashbo
 
 	overview.HealthScore = computeDashboardHealthScore(time.Now().UTC(), overview)
 
+	// 附加 NVIDIA 专属运行时指标。每个数据源独立 nil-safe，
+	// 任一字段为 nil 时对应 dashboard 字段保持 nil（已通过 json omitempty 隐藏）。
+	if s.nvidiaThrottleSource != nil {
+		snap := s.nvidiaThrottleSource.SnapshotNVIDIAAdaptiveThrottleMetrics()
+		overview.NVIDIAThrottle = &snap
+	}
+	if s.nvidiaPoolMetricsSource != nil {
+		snap := s.nvidiaPoolMetricsSource.Snapshot()
+		overview.NVIDIASharedConnectionPool = &snap
+	}
+	if s.nvidiaPrewarmerSource != nil {
+		snap := s.nvidiaPrewarmerSource.Snapshot()
+		overview.NVIDIAPrewarmer = &snap
+	}
+
 	return overview, nil
 }
 
