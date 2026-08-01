@@ -763,6 +763,13 @@ type GatewayService struct {
 	tlsFPProfileService   *TLSFingerprintProfileService
 	balanceNotifyService  *BalanceNotifyService
 	userPlatformQuotaRepo UserPlatformQuotaRepository
+
+	// nvidiaSharedPoolMetricsForSorting is best-effort latency window &
+	// per-account reuse heat used by NVIDIA scheduling locality (W3).
+	// Set by SetNVIDIASharedPoolMetricsForSorting during wire composition;
+	// nil → sortNvidiaThrottleSchedulingOrder runs without reuse-heat
+	// tiebreak (still applies LastUsedAt-descending locality).
+	nvidiaSharedPoolMetricsForSorting *NVIDIASharedConnectionPoolMetrics
 }
 
 // NewGatewayService creates a new GatewayService
@@ -1561,4 +1568,14 @@ func (s *GatewayService) debugLogGatewaySnapshot(tag string, headers http.Header
 
 	// 写入文件（调试用，并发写入可能交错但不影响可读性）
 	_, _ = f.WriteString(buf.String())
+}
+
+// SetNVIDIASharedPoolMetricsForSorting wires the NVIDIA shared pool metrics
+// into GatewayService so NVIDIA scheduling locality (W3) may consult reuse
+// heat per account. Wire-only API; never call this while serving requests.
+func (s *GatewayService) SetNVIDIASharedPoolMetricsForSorting(m *NVIDIASharedConnectionPoolMetrics) {
+	if s == nil {
+		return
+	}
+	s.nvidiaSharedPoolMetricsForSorting = m
 }

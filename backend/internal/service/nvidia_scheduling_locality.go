@@ -1,0 +1,181 @@
+package service
+
+import (
+	"context"
+	"math/rand"
+	"sort"
+	"time"
+)
+
+// nvidiaSchedulingLocalityCtxKey is the request-scoped marker telling
+// tryAcquireByLegacyOrder that the candidate set came from the NVIDIA
+// adaptive-throttle path. Use a context key so the locality behavior is
+// thread-safe without new GatewayService fields / globals.
+type nvidiaSchedulingLocalityCtxKey struct{}
+
+// WithNVIDIASchedulingLocality marks a scheduling call as NVIDIA-throttled so
+// sortNvidiaThrottleSchedulingOrder takes over inside tryAcquireByLegacyOrder.
+// Returns the parent context unchanged.
+func WithNVIDIASchedulingLocality(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, nvidiaSchedulingLocalityCtxKey{}, true)
+}
+
+// nvidiaThrottleLocalityEnabled reports whether the scheduling call entered
+// the NVIDIA adaptive-throttle path. Returns false if ctx is nil.
+func nvidiaThrottleLocalityEnabled(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, ok := ctx.Value(nvidiaSchedulingLocalityCtxKey{}).(bool)
+	return ok && v
+}
+
+// sortNvidiaThrottleSchedulingOrder ranks NVIDIA scheduling candidates by the
+// scheduling-locality tiebreak specific to NVIDIA's prefix-based KV cache:
+//
+//  1. Priority (lower = higher)
+//  2. LoadRate (lower = higher) — passed via secondaryClassification; nil here means
+//     "skip load signal, prioritize LastUsedAt recursion"
+//  3. LastUsedAt (newer = higher) — opposite of LRU: keeps cache-warm accounts first
+//  4. (same LastUsedAt second) — prefer account with positive connection reuse heat
+//  5. (everything tie-bounded) — shuffle randomly inside the same (priority + LastUsedAt) bucket
+//
+// This function does NOT mutate schedule candidates. Caller passes metrics so
+// connection reuse heat can be queried without leaking repository internals for
+// idle/inFlight state.
+//
+// Order is intentionally separate from OpenAI OAuth / Grok legacy sort path,
+// which keep the global LRU fairness invariant. This is the only path where
+// NVIDIA upstream's prefix-based KV cache policy rewards scheduling locality
+// above round-robin fairness.
+func sortNvidiaThrottleSchedulingOrder(candidates []*Account, metrics *NVIDIASharedConnectionPoolMetrics) []*Account {
+	if len(candidates) == 0 {
+		return candidates
+	}
+
+	out := append([]*Account(nil), candidates...)
+
+	// Filter out nil accounts to keep sort inputs clean.
+	live := make([]*Account, 0, len(out))
+	for _, a := range out {
+		if a != nil {
+			live = append(live, a)
+		}
+	}
+	if len(live) == 0 {
+		return out
+	}
+
+	sort.SliceStable(live, func(i, j int) bool {
+		a, b := live[i], live[j]
+		if a.Priority != b.Priority {
+			return a.Priority < b.Priority
+		}
+		// The LastUsedAt tiebreak is reversed: newer wins.
+		switch {
+		case a.LastUsedAt == nil && b.LastUsedAt != nil:
+			return false
+		case a.LastUsedAt != nil && b.LastUsedAt == nil:
+			return true
+		case a.LastUsedAt == nil && b.LastUsedAt == nil:
+			// fall through to reuse heat / shuffle below
+			return false
+		default:
+			return a.LastUsedAt.After(*b.LastUsedAt)
+		}
+	})
+
+	// If we have reuse heat metrics, stable-sort by reuse heat inside same
+	// (priority + LastUsedAt) bucket. Pure Go stdlib stable sort keeps the
+	// LastUsedAt order for any entry of equal heat value.
+	if metrics != nil {
+		// Two-pass sweep: identify buckets by (priority + LastUsedAt second)
+		// then stably pivot by reuse heat inside the bucket.
+		bucketStart := 0
+		for bucketStart < len(live) {
+			bucketEnd := bucketStart + 1
+			for bucketEnd < len(live) && sameNvidiaPriorityAndLastUsedAtSecond(live[bucketStart], live[bucketEnd]) {
+				bucketEnd++
+			}
+			if bucketEnd-bucketStart > 1 {
+				sort.SliceStable(live[bucketStart:bucketEnd], func(i, j int) bool {
+					a, b := live[bucketStart+i], live[bucketStart+j]
+					return nvidiaReuseHeatFor(a, metrics) > nvidiaReuseHeatFor(b, metrics)
+				})
+			}
+			bucketStart = bucketEnd
+		}
+	}
+
+	// Shuffle inside (priority + LastUsedAt second + reuse heat) buckets to
+	// avoid snapshot bias when candidates share identical observable state.
+	bucketStart := 0
+	for bucketStart < len(live) {
+		bucketEnd := bucketStart + 1
+		for bucketEnd < len(live) && sameNvidiaSortBucket(live[bucketStart], live[bucketEnd], metrics) {
+			bucketEnd++
+		}
+		if bucketEnd-bucketStart > 1 {
+			rand.Shuffle(bucketEnd-bucketStart, func(i, j int) {
+				live[bucketStart+i], live[bucketStart+j] = live[bucketStart+j], live[bucketStart+i]
+			})
+		}
+		bucketStart = bucketEnd
+	}
+
+	// Append any nil accounts to the tail to preserve caller's expectation
+	// that input length equals output length and nil entries do not leak
+	// forward into scheduling decisions.
+	tail := out[:0]
+	for _, a := range out {
+		if a == nil {
+			tail = append(tail, a)
+		}
+	}
+	return append(live, tail...)
+}
+
+// sameNvidiaPriorityAndLastUsedAtSecond reports whether two accounts are
+// observationally equivalent on the deterministic parts of the NVIDIA sort
+// (priority + LastUsedAt truncated to one second). Accounts tied on both
+// fields fall through to reuse heat + shuffle.
+func sameNvidiaPriorityAndLastUsedAtSecond(a, b *Account) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if a.Priority != b.Priority {
+		return false
+	}
+	if (a.LastUsedAt == nil) != (b.LastUsedAt == nil) {
+		return false
+	}
+	if a.LastUsedAt == nil && b.LastUsedAt == nil {
+		return true
+	}
+	return a.LastUsedAt.Truncate(time.Second).Equal(b.LastUsedAt.Truncate(time.Second))
+}
+
+// sameNvidiaSortBucket extends sameNvidiaPriorityAndLastUsedAtSecond with
+// reuse-heat equality, used to bound final shuffle buckets.
+func sameNvidiaSortBucket(a, b *Account, metrics *NVIDIASharedConnectionPoolMetrics) bool {
+	if !sameNvidiaPriorityAndLastUsedAtSecond(a, b) {
+		return false
+	}
+	if metrics == nil {
+		return true
+	}
+	return nvidiaReuseHeatFor(a, metrics) == nvidiaReuseHeatFor(b, metrics)
+}
+
+// nvidiaReuseHeatFor returns a comparable heat scalar for an account:
+// accounts with positive reuse history report reusedTotal (lower heat sorts
+// after higher heat). Future enhancements may add recency weighting.
+func nvidiaReuseHeatFor(a *Account, metrics *NVIDIASharedConnectionPoolMetrics) int64 {
+	if a == nil || metrics == nil {
+		return 0
+	}
+	return metrics.SnapshotAccountReuse(a.ID).ReusedTotal
+}

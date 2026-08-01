@@ -225,7 +225,7 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 		requestURL = req.URL
 	}
 	if profile == service.HTTPUpstreamProfileNVIDIA && s.metrics != nil {
-		req = s.wrapRequestWithNVIDIAHttptrace(req)
+		req = s.wrapRequestWithNVIDIAHttptrace(req, accountID)
 		if req != nil {
 			requestURL = req.URL
 		}
@@ -324,7 +324,10 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 
 // wrapRequestWithNVIDIAHttptrace 注入 httptrace.ClientTrace，在具有 NVIDIA 配置文件的请求上
 // 收集连接级指标（DNS、连接、TLS、TTFB、账户切换）。metrics 保证非 nil。
-func (s *httpUpstreamService) wrapRequestWithNVIDIAHttptrace(req *http.Request) *http.Request {
+//
+// accountID 用于复用热信号 RecordAccountReuse —— 仅在 GotConn.info.Reused 为 true 时调用，
+// 给调度路径 (W3B 空闲已热连接优先) 提供按账号维度统计的连接复用历史。
+func (s *httpUpstreamService) wrapRequestWithNVIDIAHttptrace(req *http.Request, accountID int64) *http.Request {
 	if req == nil {
 		return nil
 	}
@@ -403,6 +406,9 @@ func (s *httpUpstreamService) wrapRequestWithNVIDIAHttptrace(req *http.Request) 
 		GotConn: func(info httptrace.GotConnInfo) {
 			if info.Reused {
 				metrics.RecordConnectionReuse(true)
+				if accountID > 0 {
+					metrics.RecordAccountReuse(accountID, time.Now())
+				}
 			} else {
 				metrics.RecordConnectionReuse(false)
 			}

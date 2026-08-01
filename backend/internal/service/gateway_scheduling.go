@@ -117,6 +117,13 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	// localExcluded at each layer and never increment switchCount).
 	nvidiaGate := newNvidiaThrottleSelection(s, requestedModel)
 
+	// 标记 ctx 进入 NVIDIA 通道：tryAcquireByLegacyOrder/调度局部性据此确认走 NVIDIA
+	// 专属排序（最近用过账号优先），其余路径（OAuth/Grok/普通 OpenAI 兼容）保持全局 LRU。
+	nvidiaLocalityEnabledInThisRequest := nvidiaGate.gatingActive(ctx)
+	if nvidiaLocalityEnabledInThisRequest {
+		ctx = WithNVIDIASchedulingLocality(ctx)
+	}
+
 	// 检查 Claude Code 客户端限制（可能会替换 groupID 为降级分组）
 	group, groupID, err := s.checkClaudeCodeRestriction(ctx, groupID)
 	if err != nil {
@@ -874,7 +881,15 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates []*Account, groupID *int64, sessionHash string, preferOAuth bool) (*AccountSelectionResult, bool, error) {
 	ordered := append([]*Account(nil), candidates...)
-	sortAccountsByPriorityAndLastUsed(ordered, preferOAuth)
+
+	// NVIDIA 调度局部性：进入 NVIDIA 自适应节流路径的候选集使用
+	// nvidiaThrottleSelection 自带的排序钩子（最近用过账号优先 + 连接 reuse heat tiebreak），
+	// 而不是全局 LRU 排序。
+	if nvidiaThrottleLocalityEnabled(ctx) {
+		ordered = sortNvidiaThrottleSchedulingOrder(ordered, s.nvidiaSharedPoolMetricsForSorting)
+	} else {
+		sortAccountsByPriorityAndLastUsed(ordered, preferOAuth)
+	}
 
 	for _, acc := range ordered {
 		result, err := s.tryAcquireAccountSlot(ctx, acc.ID, acc.Concurrency)
@@ -2775,4 +2790,27 @@ func (t *nvidiaThrottleSelection) blockedError(ctx context.Context) *NVIDIAAdapt
 func (t *nvidiaThrottleSelection) gateAccount(ctx context.Context, account *Account) (bool, time.Duration, *NVIDIAAdaptiveThrottleBlockedError) {
 	gated, retry := t.reserve(ctx, account)
 	return gated, retry, nil
+}
+
+// gatingActive reports whether NVIDIA adaptive-throttle gating currently
+// applies to this request. When true, scheduling must enter NVIDIA-specific
+// scheduling-locality (sortNvidiaThrottleSchedulingOrder) instead of the
+// global LRU fallback.
+func (t *nvidiaThrottleSelection) gatingActive(ctx context.Context) bool {
+	if t == nil || t.svc == nil {
+		return false
+	}
+	return t.svc.isNVIDIAThrottleRequestScoped(ctx, t.model)
+}
+
+// isNVIDIAThrottleRequestScoped is the live check for whether adaptive
+// throttling is enabled at request scope — it MUST be cheap (cache hit path).
+func (s *GatewayService) isNVIDIAThrottleRequestScoped(ctx context.Context, model string) bool {
+	if s == nil || s.cfg == nil || !s.cfg.Gateway.NvidiaSharedConnectionPool.Enabled {
+		return false
+	}
+	if s.rateLimitService == nil {
+		return false
+	}
+	return s.rateLimitService.nvidiaAdaptiveThrottleEnabled(ctx, NVIDIAThrottleScope{CanonicalModel: model})
 }
