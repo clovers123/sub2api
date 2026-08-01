@@ -19,7 +19,7 @@ import (
 //	"Unsupported parameters: 'prompt_cache_key', 'tool_choice'"
 //
 // 正则同时支持单数 / 复数 / 引号可选；捕获组匹配字段名。
-var nvidiaUnsupportedParameterRE = regexp.MustCompile(`(?i)unsupported\s+parameter(?:s)?\s*[:=]\s*(.+)`)
+var nvidiaUnsupportedParameterRE = regexp.MustCompile(`(?i)unsupported\s+parameter(?:s|\(s\))?\s*[:=]\s*(.+)`)
 
 // nvidia Quoted field 相当于 JSON 解析 quoted 列表；字段名被 NVIDIA 用单引号或带
 // 反引号包裹；我们显式匹配这些包裹符并提取名字。
@@ -76,7 +76,7 @@ func tryNVIDIARetryOnUnsupportedParameter(responseBody []byte, requestBody []byt
 		if sErr != nil {
 			continue
 		}
-		if updated != nil {
+		if len(updated) != len(stripped) {
 			stripped = updated
 			strippedAny = true
 			logger.L().Info("nvidia unsupported parameter retry: stripped field",
@@ -129,7 +129,7 @@ func detectNVIDIAUnsupportedParameterError(statusCode int, responseBody []byte) 
 			part = strings.TrimSpace(part)
 			part = strings.Trim(part, "`'\"")
 			if part != "" && isValidNVIDIAParamName(part) {
-				quoted = append(quoted, [][]byte{[]byte(part)})
+				quoted = append(quoted, [][]byte{nil, []byte(part)})
 			}
 		}
 	}
