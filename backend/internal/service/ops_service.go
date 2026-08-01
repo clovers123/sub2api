@@ -74,9 +74,10 @@ type OpsService struct {
 
 	// NVIDIA 专属运行时指标的三个数据源，由 wire 在启动期注入。
 	// 任一字段为 nil 表示该数据源未启用 / 未构造（不影响其他字段填充）。
-	nvidiaThrottleSource    *RateLimitService
-	nvidiaPoolMetricsSource *NVIDIASharedConnectionPoolMetrics
-	nvidiaPrewarmerSource   *NVIDIAConnectionPrewarmer
+	// Atomic pointers for reload-safe publication.
+	nvidiaThrottleSource    atomic.Pointer[RateLimitService]
+	nvidiaPoolMetricsSource atomic.Pointer[NVIDIASharedConnectionPoolMetrics]
+	nvidiaPrewarmerSource   atomic.Pointer[NVIDIAConnectionPrewarmer]
 
 	// Published snapshots are immutable. Gateway reads are lock-free; the mutex
 	// only serializes startup and administrative updates.
@@ -128,9 +129,9 @@ func (s *OpsService) SetNVIDIAMetricsSources(rateLimit *RateLimitService, poolMe
 	if s == nil {
 		return
 	}
-	s.nvidiaThrottleSource = rateLimit
-	s.nvidiaPoolMetricsSource = poolMetrics
-	s.nvidiaPrewarmerSource = prewarmer
+	s.nvidiaThrottleSource.Store(rateLimit)
+	s.nvidiaPoolMetricsSource.Store(poolMetrics)
+	s.nvidiaPrewarmerSource.Store(prewarmer)
 }
 
 func NewOpsService(

@@ -160,6 +160,11 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	// 必须主动剥离避免无谓的 400 fail-over 风暴。
 	if stripped, stripErr := stripChatPromptCacheKeyForNVIDIA(upstreamBody, account); stripErr == nil {
 		upstreamBody = stripped
+	} else {
+		logger.L().Warn("nvidia strip prompt_cache_key failed; forwarding body as-is",
+			zap.Error(stripErr),
+			zap.Int64("account_id", account.ID),
+		)
 	}
 
 	logger.L().Debug("openai chat_completions raw: forwarding without protocol conversion",
@@ -256,8 +261,10 @@ func (s *OpenAIGatewayService) rawChatCompletionsURL(account *Account) (string, 
 // 末尾 [DONE] 之前的 chunk 中的 usage 字段，按 OpenAI CC 协议）。
 //
 // usage 字段仅在客户端请求 stream_options.include_usage=true 时出现于上游响应中。
-// 网关会对上游强制打开 include_usage 以保证计费完整，并原样向下游透传 usage，
-// 让级联代理或下游计费系统也能拿到完整用量。
+// 非 NVIDIA 账号：网关对上游强制打开 include_usage 以保证计费完整，并向下游原样透传 usage。
+// NVIDIA 账号：跳过强制注入（NVIDIA 免费 API 对 stream_options.include_usage 支持不稳定），
+// 保留客户端原值，计费依赖上游原生 usage 输出。
+// 级联代理或下游计费系统可通过此通用路径拿到完整用量。
 func (s *OpenAIGatewayService) streamRawChatCompletions(
 	c *gin.Context,
 	resp *http.Response,

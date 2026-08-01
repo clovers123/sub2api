@@ -886,7 +886,7 @@ func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates
 	// nvidiaThrottleSelection 自带的排序钩子（最近用过账号优先 + 连接 reuse heat tiebreak），
 	// 而不是全局 LRU 排序。
 	if nvidiaThrottleLocalityEnabled(ctx) {
-		ordered = sortNvidiaThrottleSchedulingOrder(ordered, s.nvidiaSharedPoolMetricsForSorting)
+		ordered = sortNvidiaThrottleSchedulingOrder(ordered, s.nvidiaSharedPoolMetricsForSorting.Load())
 	} else {
 		sortAccountsByPriorityAndLastUsed(ordered, preferOAuth)
 	}

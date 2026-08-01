@@ -476,6 +476,13 @@ gateway:
     # 周期保活间隔（秒）；0 表示仅启动时预热一次，不启动周期保活。
     # Keepalive interval in seconds; 0 means prewarm once at startup with no ticker.
     prewarm_interval_seconds: 240
+    # H2 PING 空闲超时（秒），显式覆盖 NVIDIA 共享池的 HTTP/2 keep-alive PING 间隔。
+    # 0 退回默认 15s；放慢到 60-90s 可大幅减少 130 账号背景下的 PING 流量，
+    # 同时仍可在 IdleConnTimeoutSeconds 兜底前剔除死连接。
+    # H2 PING idle timeout (seconds); 0 falls back to default 15s.
+    # Slowing to 60-90s dramatically reduces PING storms with 130 accounts
+    # while still evicting dead connections before IdleConnTimeoutSeconds kicks in.
+    h2_ping_idle_timeout_seconds: 90
   # HTTP upstream connection pool settings (HTTP/2 + multi-proxy scenario defaults)
   # HTTP 上游连接池配置（HTTP/2 + 多代理场景默认值）
   # Max idle connections across all hosts

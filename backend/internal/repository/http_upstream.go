@@ -1133,13 +1133,14 @@ func (s *httpUpstreamService) applyProfilePoolSettings(settings poolSettings, pr
 // buildPoolKey 构建连接池配置键，用于检测连接池配置变更。
 func buildPoolKey(settings poolSettings, protocolMode string) string {
 	base := fmt.Sprintf(
-		"idle:%d|idle_host:%d|max:%d|idle_timeout:%s|header_timeout:%s|ping_idle:%s",
+		"idle:%d|idle_host:%d|max:%d|idle_timeout:%s|header_timeout:%s|ping_idle:%s|ping_timeout:%s",
 		settings.maxIdleConns,
 		settings.maxIdleConnsPerHost,
 		settings.maxConnsPerHost,
 		settings.idleConnTimeout,
 		settings.responseHeaderTimeout,
 		settings.h2PingIdleTimeout,
+		settings.h2PingTimeout,
 	)
 	if protocolMode == "" || protocolMode == upstreamProtocolModeDefault {
 		return base
