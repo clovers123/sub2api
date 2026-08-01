@@ -453,6 +453,24 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 				zap.String("request_id", requestID),
 			)
 		}
+		// P2: 已输出过字节且流被上游截断 → 向客户端追加可重试错误事件。
+		// 协议与 Anthropic SSE 标准一致；错误码沿用 stream_read_error.go 已有常量。
+		const streamInterruptedType = "upstream_stream_read_error"
+		const streamInterruptedMessage = "Upstream response stream was interrupted"
+		if clientOutputStarted && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			streamErrorLine := fmt.Sprintf(
+				`{"type":"error","error":{"type":%q,"message":%q}}`,
+				streamInterruptedType, streamInterruptedMessage,
+			)
+			// 追加 SSE 错误事件 + 终止 [DONE]标记
+			writeLine("data: " + streamErrorLine)
+			writeLine("")
+			writeLine("data: [DONE]")
+			writeLine("")
+			if !clientDisconnected {
+				c.Writer.Flush()
+			}
+		}
 	} else if !clientDisconnected && !clientOutputStarted {
 		if refusalDetector.IsSilentRefusal() {
 			return nil, newOpenAISilentRefusalFailoverError(c, account, requestID)
