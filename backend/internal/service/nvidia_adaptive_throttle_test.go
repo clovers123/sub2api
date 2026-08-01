@@ -69,7 +69,7 @@ func TestIsNVIDIACapacitySignal_CaseInsensitive(t *testing.T) {
 func TestNvidiaThrottleRate_SuccessDecaysSpacing(t *testing.T) {
 	s := &RateLimitService{}
 	settings := &NVIDIAAdaptiveThrottleSettings{MaxSpacing: 30 * time.Second}
-	rate := s.nvidiaThrottleRate(nvidiaThrottleSignalSuccess, settings)
+	rate := s.nvidiaThrottleRate(nvidiaThrottleSignalSuccess, settings, nil)
 	require.Equal(t, int64(1), rate.ConsecutivePenalty, "success → penalty count =1")
 	require.Equal(t, int64(0), rate.SpacingMs, "success → SpacingMs unset; DecaySpacing=true lets Lua halve existing")
 	require.True(t, rate.DecaySpacing, "success → DecaySpacing=true")
@@ -78,7 +78,7 @@ func TestNvidiaThrottleRate_SuccessDecaysSpacing(t *testing.T) {
 func TestNvidiaThrottleRate_RateLimitJitterBoundedByMaxSpacing(t *testing.T) {
 	s := &RateLimitService{nvidiaThrottleJitter: func(max time.Duration) time.Duration { return max * 10 }}
 	settings := &NVIDIAAdaptiveThrottleSettings{MaxSpacing: time.Second}
-	rate := s.nvidiaThrottleRate(nvidiaThrottleSignalRate, settings)
+	rate := s.nvidiaThrottleRate(nvidiaThrottleSignalRate, settings, nil)
 	require.Equal(t, int64(1), rate.ConsecutivePenalty)
 	require.Equal(t, int64(settings.MaxSpacing.Milliseconds()), rate.SpacingMs, "SpacingMs capped to MaxSpacing=1s even when jitter overflows")
 	require.False(t, rate.DecaySpacing, "rate-limit signal → no decay flag (penalty must not recover)")
@@ -87,7 +87,7 @@ func TestNvidiaThrottleRate_RateLimitJitterBoundedByMaxSpacing(t *testing.T) {
 func TestNvidiaThrottleRate_CapacityUsesMaxSpacingPlusJitter(t *testing.T) {
 	s := &RateLimitService{nvidiaThrottleJitter: func(max time.Duration) time.Duration { return 100 * time.Millisecond }}
 	settings := &NVIDIAAdaptiveThrottleSettings{MaxSpacing: 5 * time.Second}
-	rate := s.nvidiaThrottleRate(nvidiaThrottleSignalCapacity, settings)
+	rate := s.nvidiaThrottleRate(nvidiaThrottleSignalCapacity, settings, nil)
 	require.Equal(t, int64(5)*1000+int64(100), rate.CapacityPenaltyMs, "CapacityPenaltyMs = MaxSpacing + jitter(ms)")
 	require.Equal(t, int64(settings.MaxSpacing.Milliseconds()), rate.CapacityWindowMs)
 }
@@ -95,8 +95,85 @@ func TestNvidiaThrottleRate_CapacityUsesMaxSpacingPlusJitter(t *testing.T) {
 func TestNvidiaThrottleRate_NoneSignalIsZero(t *testing.T) {
 	s := &RateLimitService{}
 	settings := &NVIDIAAdaptiveThrottleSettings{MaxSpacing: time.Second}
-	rate := s.nvidiaThrottleRate(nvidiaThrottleSignalNone, settings)
+	rate := s.nvidiaThrottleRate(nvidiaThrottleSignalNone, settings, nil)
 	require.Equal(t, NvidiaThrottleRate{}, rate, "non classifiable signal must produce all-zero rate")
+}
+
+func TestNvidiaThrottleRate_RateLimitHonorsRetryAfterHeader(t *testing.T) {
+ casos := []struct {
+  name      string
+  header    http.Header
+  jitter    func(time.Duration) time.Duration
+  maxSpace  time.Duration
+  wantMs    int64
+ }{
+  {
+   name:     "Retry-After=5 dominates default 1s spacing",
+   header:    http.Header{"Retry-After": []string{"5"}},
+   jitter:   func(time.Duration) time.Duration { return 0 },
+   maxSpace:  30 * time.Second,
+   wantMs:    5000,
+  },
+  {
+   name:     "no Retry-After header falls back to 1s + jitter default",
+   header:    http.Header{},
+   jitter:   func(time.Duration) time.Duration { return 0 },
+   maxSpace:  30 * time.Second,
+   wantMs:    1000,
+  },
+  {
+   name:     "Retry-After=60 exceeds MaxSpacing=10s gets clamped to 10s",
+   header:    http.Header{"Retry-After": []string{"60"}},
+   jitter:   func(time.Duration) time.Duration { return 0 },
+   maxSpace:  10 * time.Second,
+   wantMs:    10000,
+  },
+  {
+   name:     "Retry-After=0 (delta=0) falls back to 1s default lower bound",
+   header:    http.Header{"Retry-After": []string{"0"}},
+   jitter:   func(time.Duration) time.Duration { return 0 },
+   maxSpace:  30 * time.Second,
+   wantMs:    1000,
+  },
+  {
+   name:     "Retry-After=1 equals default lower bound, no override happens, +0 jitter = 1s",
+   header:    http.Header{"Retry-After": []string{"1"}},
+   jitter:   func(time.Duration) time.Duration { return 0 },
+   maxSpace:  30 * time.Second,
+   wantMs:    1000,
+  },
+  {
+   name:     "Retry-After=3 plus 200ms jitter produces 3.2s spacing",
+   header:    http.Header{"Retry-After": []string{"3"}},
+   jitter:   func(time.Duration) time.Duration { return 200 * time.Millisecond },
+   maxSpace:  30 * time.Second,
+   wantMs:    3200,
+  },
+  {
+   name:     "malformed Retry-After falls back to 1s + jitter",
+   header:    http.Header{"Retry-After": []string{"not-a-number"}},
+   jitter:   func(time.Duration) time.Duration { return 0 },
+   maxSpace:  30 * time.Second,
+   wantMs:    1000,
+  },
+ }
+ for _, tc := range casos {
+  t.Run(tc.name, func(t *testing.T) {
+   s := &RateLimitService{nvidiaThrottleJitter: tc.jitter}
+   settings := &NVIDIAAdaptiveThrottleSettings{MaxSpacing: tc.maxSpace}
+   rate := s.nvidiaThrottleRate(nvidiaThrottleSignalRate, settings, tc.header)
+   require.Equal(t, tc.wantMs, rate.SpacingMs, "SpacingMs must match expected for this Retry-After/jitter/MaxSpacing combination")
+   require.Equal(t, int64(1), rate.ConsecutivePenalty, "rate signal always sets penalty=1")
+   require.False(t, rate.DecaySpacing, "rate signal must not decay")
+  })
+ }
+}
+
+func TestNvidiaThrottleRate_RateLimitNilHeadersFallsBackToDefault(t *testing.T) {
+	s := &RateLimitService{nvidiaThrottleJitter: func(time.Duration) time.Duration { return 0 }}
+	settings := &NVIDIAAdaptiveThrottleSettings{MaxSpacing: 30 * time.Second}
+	rate := s.nvidiaThrottleRate(nvidiaThrottleSignalRate, settings, nil)
+	require.Equal(t, int64(1000), rate.SpacingMs, "nil headers must fall back to 1s default spacing")
 }
 
 func TestDefaultNVIDIAAdaptiveThrottleJitter_NonNegativeAndBounded(t *testing.T) {

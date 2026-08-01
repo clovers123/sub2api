@@ -37,9 +37,19 @@ type NvidiaReserveResult struct {
 }
 
 // NvidiaThrottleUpdate carries an upstream outcome for adaptive-throttle learning.
+//
+// Headers carries the NVIDIA upstream response headers. The 429 path uses
+// `Retry-After` (delta-seconds or HTTP-date per RFC 6585 §4) to calibrate
+// spacing — when NVIDIA explicitly tells us how long to wait the scheduler
+// MUST honor that instruction rather than overwriting it with the default
+// `1s + jitter` spacing that burns client RPS quota in 429 storms.
+//
+// Headers may be nil when the caller has no header access (e.g. test paths);
+// a missing/empty `Retry-After` is equivalent to falling back to the default.
 type NvidiaThrottleUpdate struct {
 	Scope        NVIDIAThrottleScope
 	StatusCode   int
+	Headers      http.Header
 	ResponseBody []byte
 }
 
@@ -88,7 +98,7 @@ func (s *RateLimitService) RecordNVIDIAAdaptiveThrottleOutcome(ctx context.Conte
 		return false
 	}
 	settings := s.getNVIDIAAdaptiveThrottleSettings(ctx)
-	rate := s.nvidiaThrottleRate(signal, settings)
+	rate := s.nvidiaThrottleRate(signal, settings, update.Headers)
 	if err := s.nvidiaAdaptiveThrottleCache.Apply(ctx, update.Scope.AccountID, update.Scope.CanonicalModel, rate); err != nil {
 		s.ensureNVIDIAAdaptiveThrottleRuntime()
 		s.nvidiaMetrics.CacheErrors.Add(1)
@@ -106,12 +116,23 @@ func (s *RateLimitService) nvidiaAdaptiveThrottleEnabled(ctx context.Context, sc
 	return s.getNVIDIAAdaptiveThrottleSettings(ctx).Enabled
 }
 
-func (s *RateLimitService) nvidiaThrottleRate(signal nvidiaThrottleSignal, settings *NVIDIAAdaptiveThrottleSettings) NvidiaThrottleRate {
+func (s *RateLimitService) nvidiaThrottleRate(signal nvidiaThrottleSignal, settings *NVIDIAAdaptiveThrottleSettings, headers http.Header) NvidiaThrottleRate {
 	switch signal {
 	case nvidiaThrottleSignalSuccess:
 		return NvidiaThrottleRate{ConsecutivePenalty: 1, DecaySpacing: true}
 	case nvidiaThrottleSignalRate:
-		spacing := time.Second + s.nvidiaThrottleJitter(time.Second)
+		// NVIDIA NIM 在 429 响应中常带 Retry-After 头给出明确的等待指令。
+		// 优先 honor 上游显式指令,缺失/无效时回退原有 1s+jitter 默认。
+		// 必要性: NVIDIA 容量极紧时 Retry-After: 5/10/30 是真实容量恢复曲线,
+		//   覆盖为 1s spacing 会引发连续 6 次无谓被拒 + 烧光 client RPS 配额,
+		//   并触发 NVIDIA 主动风控升级。RFC 6585 §4 明确指令应当被 honor。
+		spacing := time.Second
+		if headers != nil {
+			if ra := ParseRetryAfter(headers, time.Now()); ra > spacing {
+				spacing = ra
+			}
+		}
+		spacing += s.nvidiaThrottleJitter(time.Second)
 		if spacing > settings.MaxSpacing {
 			spacing = settings.MaxSpacing
 		}
