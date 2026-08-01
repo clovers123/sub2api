@@ -29,10 +29,11 @@ type NVIDIASharedConnectionPoolMetrics struct {
 }
 
 // nvidiaAccountReuseState holds per-account reuse bookkeeping for the scheduler.
-// Guarded by accountReuseMu on the parent metrics instance.
+// Fields are atomic so the scheduler hot-path (SnapshotAccountReuse) can read
+// ReusedTotal without locking; only map access is mutex-protected.
 type nvidiaAccountReuseState struct {
-	reusedTotal       int64
-	lastReuseAtNano   int64
+	reusedTotal       atomic.Int64
+	lastReuseAtNano   atomic.Int64
 }
 
 // NVIDIAAccountReuseSnapshot is the read-only view of an account's reuse events.
@@ -116,13 +117,14 @@ func (m *NVIDIASharedConnectionPoolMetrics) RecordTTFB(duration time.Duration) {
 
 // RecordAccountReuse increments the per-account reuse counter for accountID
 // and updates the latest reuse timestamp so schedulers can prefer accounts
-// whose upstream HTTP/2 connection was recently reused (warmed).
+// whose upstream HTTP/2 connections are already warm.
+// Lock only for map access; per-account fields are atomic for lock-free reads
+// in the scheduler hot-path (SnapshotAccountReuse).
 func (m *NVIDIASharedConnectionPoolMetrics) RecordAccountReuse(accountID int64, at time.Time) {
 	if m == nil || accountID <= 0 {
 		return
 	}
 	m.accountReuseMu.Lock()
-	defer m.accountReuseMu.Unlock()
 	if m.accountReuseBy == nil {
 		m.accountReuseBy = make(map[int64]*nvidiaAccountReuseState)
 	}
@@ -131,28 +133,38 @@ func (m *NVIDIASharedConnectionPoolMetrics) RecordAccountReuse(accountID int64, 
 		state = &nvidiaAccountReuseState{}
 		m.accountReuseBy[accountID] = state
 	}
-	state.reusedTotal++
+	m.accountReuseMu.Unlock()
+
+	state.reusedTotal.Add(1)
 	ts := at.UnixNano()
-	if ts > state.lastReuseAtNano {
-		state.lastReuseAtNano = ts
+	for {
+		old := state.lastReuseAtNano.Load()
+		if ts <= old {
+			break
+		}
+		if state.lastReuseAtNano.CompareAndSwap(old, ts) {
+			break
+		}
 	}
 }
 
 // SnapshotAccountReuse returns a point-in-time view of an account's reuse state.
 // Returns zero value if accountID was never recorded.
+// Lock only for map lookup; per-account fields are read atomically so the
+// scheduler hot-path (sort tiebreak) never blocks on this mutex.
 func (m *NVIDIASharedConnectionPoolMetrics) SnapshotAccountReuse(accountID int64) NVIDIAAccountReuseSnapshot {
 	if m == nil || accountID <= 0 {
 		return NVIDIAAccountReuseSnapshot{}
 	}
 	m.accountReuseMu.Lock()
-	defer m.accountReuseMu.Unlock()
 	state, ok := m.accountReuseBy[accountID]
+	m.accountReuseMu.Unlock()
 	if !ok || state == nil {
 		return NVIDIAAccountReuseSnapshot{}
 	}
 	return NVIDIAAccountReuseSnapshot{
-		ReusedTotal:         state.reusedTotal,
-		LastReuseAtUnixNano: state.lastReuseAtNano,
+		ReusedTotal:         state.reusedTotal.Load(),
+		LastReuseAtUnixNano: state.lastReuseAtNano.Load(),
 	}
 }
 

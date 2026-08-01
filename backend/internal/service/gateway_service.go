@@ -799,7 +799,9 @@ type GatewayService struct {
 	// Set by SetNVIDIASharedPoolMetricsForSorting during wire composition;
 	// nil → sortNvidiaThrottleSchedulingOrder runs without reuse-heat
 	// tiebreak (still applies LastUsedAt-descending locality).
-	nvidiaSharedPoolMetricsForSorting *NVIDIASharedConnectionPoolMetrics
+	// Atomic to allow safe concurrent reads in sort hot-path if wire is
+	// ever re-invoked at runtime (reload-safety).
+	nvidiaSharedPoolMetricsForSorting atomic.Pointer[NVIDIASharedConnectionPoolMetrics]
 }
 
 // NewGatewayService creates a new GatewayService
@@ -1691,9 +1693,10 @@ func (s *GatewayService) debugLogGatewaySnapshot(tag string, headers http.Header
 // SetNVIDIASharedPoolMetricsForSorting wires the NVIDIA shared pool metrics
 // into GatewayService so NVIDIA scheduling locality (W3) may consult reuse
 // heat per account. Wire-only API; never call this while serving requests.
+// Uses atomic.Pointer.Store for reload-safe publication.
 func (s *GatewayService) SetNVIDIASharedPoolMetricsForSorting(m *NVIDIASharedConnectionPoolMetrics) {
 	if s == nil {
 		return
 	}
-	s.nvidiaSharedPoolMetricsForSorting = m
+	s.nvidiaSharedPoolMetricsForSorting.Store(m)
 }

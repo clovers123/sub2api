@@ -92,6 +92,16 @@ func nvidiaErrorLogBodyExcerpt(body []byte) string {
 		if keep < 0 {
 			keep = 0
 		}
+		// Walk back to the last valid UTF-8 rune boundary so sliced log lines
+		// never emit half-runes; byte slicing may split a multi-byte rune so
+		// retreat to the previous valid rune start byte.
+		// UTF-8 continuation bytes are 0b10xxxxxx (0x80-0xBF).
+		for keep > 0 && (redacted[keep]&0xC0) == 0x80 {
+			keep--
+		}
+		if keep < 0 {
+			keep = 0
+		}
 		redacted = redacted[:keep] + nvidiaErrorLogTruncateSuffix
 	}
 	return redacted

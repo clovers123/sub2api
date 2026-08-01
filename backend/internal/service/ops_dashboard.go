@@ -69,16 +69,16 @@ func (s *OpsService) GetDashboardOverview(ctx context.Context, filter *OpsDashbo
 
 	// 附加 NVIDIA 专属运行时指标。每个数据源独立 nil-safe，
 	// 任一字段为 nil 时对应 dashboard 字段保持 nil（已通过 json omitempty 隐藏）。
-	if s.nvidiaThrottleSource != nil {
-		snap := s.nvidiaThrottleSource.SnapshotNVIDIAAdaptiveThrottleMetrics()
+	if src := s.nvidiaThrottleSource.Load(); src != nil {
+		snap := src.SnapshotNVIDIAAdaptiveThrottleMetrics()
 		overview.NVIDIAThrottle = &snap
 	}
-	if s.nvidiaPoolMetricsSource != nil {
-		snap := s.nvidiaPoolMetricsSource.Snapshot()
+	if src := s.nvidiaPoolMetricsSource.Load(); src != nil {
+		snap := src.Snapshot()
 		overview.NVIDIASharedConnectionPool = &snap
 	}
-	if s.nvidiaPrewarmerSource != nil {
-		snap := s.nvidiaPrewarmerSource.Snapshot()
+	if src := s.nvidiaPrewarmerSource.Load(); src != nil {
+		snap := src.Snapshot()
 		overview.NVIDIAPrewarmer = &snap
 	}
 

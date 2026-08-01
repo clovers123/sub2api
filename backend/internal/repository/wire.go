@@ -40,7 +40,14 @@ func ProvidePricingRemoteClient(cfg *config.Config) service.PricingRemoteClient 
 
 // ProvideHTTPUpstream is a Wire-friendly constructor that injects the
 // NVIDIA shared connection pool metrics into the HTTP upstream service.
+//
+// After construction it also pushes the effective MaxConnsPerHost ceiling
+// into the metrics snapshot so Ops Dashboard (W4 I) can observe the actual
+// per-host connection cap without re-reading config at query time.
 func ProvideHTTPUpstream(cfg *config.Config, metrics *service.NVIDIASharedConnectionPoolMetrics) service.HTTPUpstream {
+	if metrics != nil && cfg != nil {
+		metrics.SetMaxConnsPerHost(cfg.Gateway.MaxConnsPerHost)
+	}
 	return newHTTPUpstream(cfg, metrics)
 }
 
