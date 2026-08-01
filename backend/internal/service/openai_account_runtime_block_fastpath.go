@@ -21,6 +21,9 @@ const (
 	// nvidiaResourceExhaustedCooldown 是 NVIDIA 免费 API Worker 耗尽后的冷却时长。
 	// 48/48 Worker 饱和度通常是持续性的，2 分钟才足够等待 Worker 池排空。
 	nvidiaResourceExhaustedCooldown = 2 * time.Minute
+	// nvidiaUnauthorizedCooldown 是 NVIDIA 免费 API key 失效后的冷却时长。
+	// API key 失效通常需要 NVIDIA 侧重新申请或人工重置，24h 才有重试意义。
+	nvidiaUnauthorizedCooldown = 24 * time.Hour
 )
 
 // OpenAIOAuth429FailoverState tracks the request-local follow-up budget after
@@ -50,9 +53,13 @@ func isOpenAIAccount(account *Account) bool {
 	return account != nil && (account.Platform == PlatformOpenAI || account.Platform == PlatformGrok)
 }
 
-// isNVIDIAResourceExhaustedError 检测 NVIDIA 免费 API 的 Worker 池耗尽错误。
-// NVIDIA 返回类似 "ResourceExhausted: Worker local total request limit reached (48/48)"
-// 的消息，不在 Google RPC 格式内，需要独立匹配。
+// isNVIDIAResourceExhaustedError 检测 NVIDIA 免费 API 的容量耗尽错误。
+// 命中两种模式之一即认为真：
+//   - ResourceExhausted + "Worker local total request limit"（Worker 池饱和）
+//   - 503 + capacity（容量不足）
+//
+// 后者是兜底通道，确保当 nvidia_adaptive_throttle_enabled 关闭时也能快速冷切，
+// 不会落到 generic 1min 基础 cooldown。
 func isNVIDIAResourceExhaustedError(statusCode int, body []byte) bool {
 	if statusCode != http.StatusTooManyRequests && statusCode != http.StatusServiceUnavailable {
 		return false
@@ -61,14 +68,34 @@ func isNVIDIAResourceExhaustedError(statusCode int, body []byte) bool {
 		return false
 	}
 	lower := bytes.ToLower(body)
-	// 匹配两个标尽特征：ResourceExhausted 和 Worker 限制信息
-	if !bytes.Contains(lower, []byte("resourceexhausted")) {
+	if bytes.Contains(lower, []byte("resourceexhausted")) &&
+		bytes.Contains(lower, []byte("worker local total request limit")) {
+		return true
+	}
+	if statusCode == http.StatusServiceUnavailable && bytes.Contains(lower, []byte("capacity")) {
+		return true
+	}
+	return false
+}
+
+// isNVIDIAUnauthorizedError 检测 NVIDIA 免费 API key 失效错误。
+// 命中后送 24h BlockAccountScheduling 冷却池，避免 generic 1min cooldown 反复轮到失效 key。
+// 关键字选择保守——必须显式出现 "unauthorized" 或 "invalid_api_key" 子串，避免误判下游 5xx。
+func isNVIDIAUnauthorizedError(statusCode int, body []byte) bool {
+	if statusCode != http.StatusUnauthorized {
 		return false
 	}
-	if !bytes.Contains(lower, []byte("worker local total request limit")) {
+	if len(body) == 0 {
 		return false
 	}
-	return true
+	lower := bytes.ToLower(body)
+	if bytes.Contains(lower, []byte("unauthorized")) {
+		return true
+	}
+	if bytes.Contains(lower, []byte("invalid_api_key")) {
+		return true
+	}
+	return false
 }
 
 // handleOpenAIAccountUpstreamError expects canonicalModel to be the model used
@@ -116,6 +143,17 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 				return true
 			}
 		}
+	}
+
+	// NVIDIA 免费 API key 失效（401）：送 24h 长 cooldown 防止反复轮询失效账号。
+	// 需在 isNVIDIAResourceExhaustedError 之前，因为 unauthorized 不可逆且不应等 2min 重试。
+	if account.Type == AccountTypeAPIKey && isNVIDIAUnauthorizedError(statusCode, responseBody) {
+		slog.Warn("openai_nvidia_unauthorized",
+			"account_id", account.ID,
+			"status_code", statusCode,
+		)
+		s.BlockAccountScheduling(account, time.Now().Add(nvidiaUnauthorizedCooldown), "nvidia_unauthorized")
+		return true
 	}
 
 	// NVIDIA 免费 API 的 Worker 池耗尽 (ResourceExhausted)：强制冷却账号并阻止 failover 扩散。

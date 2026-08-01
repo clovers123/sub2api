@@ -151,6 +151,13 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		}
 	}
 
+	// NVIDIA 免费 API 会拒绝 prompt_cache_key（返回 400 "Unsupported parameter(s)"）。
+	// raw CC path 不注入 prompt_cache_key，但客户端可能在原始 body 里塞一个，
+	// 必须主动剥离避免无谓的 400 fail-over 风暴。
+	if stripped, stripErr := stripChatPromptCacheKeyForNVIDIA(upstreamBody, account); stripErr == nil {
+		upstreamBody = stripped
+	}
+
 	logger.L().Debug("openai chat_completions raw: forwarding without protocol conversion",
 		zap.Int64("account_id", account.ID),
 		zap.String("original_model", originalModel),
@@ -491,4 +498,36 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 // 与 buildOpenAIResponsesURL 是姐妹函数。
 func buildOpenAIChatCompletionsURL(base string) string {
 	return buildOpenAIEndpointURL(base, "/v1/chat/completions")
+}
+
+// isNVIDIAAccountByHostname 判断账号是否为 NVIDIA 免费 API 账号（仅以 base_url 主机名为准）。
+// 与 chatCompletionsHTTPUpstreamProfile 使用的判定一致，确保 raw CC 路径
+// 也能识别同样的上游并采取对应的请求体处理。
+func isNVIDIAAccountByHostname(account *Account) bool {
+	if account == nil || !account.IsOpenAIApiKey() {
+		return false
+	}
+	baseURL := account.GetOpenAIBaseURL()
+	if baseURL == "" {
+		return false
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil || parsed.Hostname() == "" {
+		return false
+	}
+	return parsed.Hostname() == nvidiaAPIHostname
+}
+
+// stripChatPromptCacheKeyForNVIDIA 在 raw CC 路径中针对 NVIDIA 账号剥离 prompt_cache_key。
+// NVIDIA 免费 API 会拒绝该字段（400 "Unsupported parameter(s)"），
+// 即便客户端在 body 中显式塞入，也必须在转发前删除以避免 fail-over 风暴。
+// 对非 NVIDIA 账号保持原样不变。
+func stripChatPromptCacheKeyForNVIDIA(body []byte, account *Account) ([]byte, error) {
+	if !isNVIDIAAccountByHostname(account) {
+		return body, nil
+	}
+	if !gjson.GetBytes(body, "prompt_cache_key").Exists() {
+		return body, nil
+	}
+	return sjson.DeleteBytes(body, "prompt_cache_key")
 }
