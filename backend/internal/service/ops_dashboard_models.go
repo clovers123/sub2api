@@ -67,6 +67,17 @@ type OpsDashboardOverview struct {
 
 	Duration OpsPercentiles `json:"duration"`
 	TTFT     OpsPercentiles `json:"ttft"`
+
+	// NVIDIA 专属运行时指标（best-effort, monitoring 关闭 / sources 未注入时为 nil）。
+	// 数据来源：
+	//   - NVIDIAThrottle: RateLimitService.nvidiaMetrics（自适应节流计数）
+	//   - NVIDIASharedConnectionPool: 共享连接池指标（reuse / dns / connect / tls / ttfb / account_switch）
+	//   - NVIDIAPrewarmer: NVIDIAConnectionPrewarmer.Snapshot()（预热轮次 / 累计成功失败 / 上轮时间）
+	// 这些字段供 Ops 面板实时观察 NVIDIA 容量与调度健康度，
+	// 与 SLA/错误率无关，因此 dashboard 渲染时永远 best-effort、不阻塞主路径。
+	NVIDIAThrottle             *NVIDIAAdaptiveThrottleMetricsSnapshot     `json:"nvidia_throttle,omitempty"`
+	NVIDIASharedConnectionPool *NVIDIASharedConnectionPoolMetricsSnapshot `json:"nvidia_shared_connection_pool,omitempty"`
+	NVIDIAPrewarmer            *NVIDIAConnectionPrewarmerSnapshot        `json:"nvidia_prewarmer,omitempty"`
 }
 
 type OpsLatencyHistogramBucket struct {

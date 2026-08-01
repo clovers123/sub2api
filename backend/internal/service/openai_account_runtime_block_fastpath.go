@@ -216,10 +216,7 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	// NVIDIA 免费 API key 失效（401）：送 24h 长 cooldown 防止反复轮询失效账号。
 	// 需在 isNVIDIAResourceExhaustedError 之前，因为 unauthorized 不可逆且不应等 2min 重试。
 	if account.Type == AccountTypeAPIKey && isNVIDIAUnauthorizedError(statusCode, responseBody) {
-		slog.Warn("openai_nvidia_unauthorized",
-			"account_id", account.ID,
-			"status_code", statusCode,
-		)
+		logNvidiaUpstreamError(ctx, account, statusCode, responseBody, "nvidia_unauthorized")
 		s.BlockAccountScheduling(account, time.Now().Add(nvidiaUnauthorizedCooldown), "nvidia_unauthorized")
 		return true
 	}
@@ -227,10 +224,7 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	// NVIDIA 免费 API 的 Worker 池耗尽 (ResourceExhausted)：强制冷却账号并阻止 failover 扩散。
 	// 如果 temp_unschedulable_rules 已独立匹配，此分支作为补充保障路径，确保账号被立即内存封锁。
 	if account.Type == AccountTypeAPIKey && isNVIDIAResourceExhaustedError(statusCode, responseBody) {
-		slog.Warn("openai_nvidia_resource_exhausted",
-			"account_id", account.ID,
-			"status_code", statusCode,
-		)
+		logNvidiaUpstreamError(ctx, account, statusCode, responseBody, "nvidia_resource_exhausted")
 		s.BlockAccountScheduling(account, time.Now().Add(nvidiaResourceExhaustedCooldown), "nvidia_resource_exhausted")
 		if s.rateLimitService != nil {
 			_ = s.rateLimitService.HandleUpstreamError(stateCtx, account, statusCode, headers, responseBody)
