@@ -20,8 +20,12 @@ type NVIDIASharedConnectionPoolMetrics struct {
 
 	// accountReuse tracks per-account reuse events so schedulers can prefer
 	// accounts whose upstream HTTP/2 connections are already warm.
-	accountReuseMu       sync.Mutex
-	accountReuseBy       map[int64]*nvidiaAccountReuseState
+	accountReuseMu sync.Mutex
+	accountReuseBy map[int64]*nvidiaAccountReuseState
+
+	// maxConnsPerHost: configured ceiling on per-host connections in the NVIDIA
+	// shared pool. Atomic to allow concurrent reads from Snapshot().
+	maxConnsPerHost atomic.Int32
 }
 
 // nvidiaAccountReuseState holds per-account reuse bookkeeping for the scheduler.
@@ -52,6 +56,7 @@ type NVIDIASharedConnectionPoolMetricsSnapshot struct {
 	Connect                       NVIDIASharedConnectionLatencySnapshot `json:"nvidia_connect_ms"`
 	TLSHandshake                  NVIDIASharedConnectionLatencySnapshot `json:"nvidia_tls_handshake_ms"`
 	TTFB                          NVIDIASharedConnectionLatencySnapshot `json:"nvidia_ttfb_ms"`
+	MaxConnsPerHost               int                                   `json:"nvidia_max_conns_per_host"`
 }
 
 type NVIDIASharedConnectionReuseSnapshot struct {
@@ -151,6 +156,14 @@ func (m *NVIDIASharedConnectionPoolMetrics) SnapshotAccountReuse(accountID int64
 	}
 }
 
+// SetMaxConnsPerHost records the per-host connection ceiling exposed via Snapshot().
+func (m *NVIDIASharedConnectionPoolMetrics) SetMaxConnsPerHost(n int) {
+	if m == nil || n < 0 {
+		return
+	}
+	m.maxConnsPerHost.Store(int32(n))
+}
+
 func (m *NVIDIASharedConnectionPoolMetrics) Snapshot() NVIDIASharedConnectionPoolMetricsSnapshot {
 	if m == nil {
 		return NVIDIASharedConnectionPoolMetricsSnapshot{}
@@ -159,6 +172,7 @@ func (m *NVIDIASharedConnectionPoolMetrics) Snapshot() NVIDIASharedConnectionPoo
 		Reuse:                         NVIDIASharedConnectionReuseSnapshot{ReusedTotal: m.reusedTotal.Load(), NotReusedTotal: m.notReusedTotal.Load()},
 		AccountSwitchToRequestWritten: m.accountSwitchToRequestWritten.snapshot(),
 		DNS:                           m.dns.snapshot(), Connect: m.connect.snapshot(), TLSHandshake: m.tlsHandshake.snapshot(), TTFB: m.ttfb.snapshot(),
+		MaxConnsPerHost:               int(m.maxConnsPerHost.Load()),
 	}
 }
 

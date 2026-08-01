@@ -1099,6 +1099,10 @@ type GatewayNvidiaSharedConnectionPoolConfig struct {
 	// PrewarmIntervalSeconds: 周期保活间隔（秒）。
 	// 0 表示仅在启动时预热一次，不启动周期保活。
 	PrewarmIntervalSeconds int `mapstructure:"prewarm_interval_seconds"`
+	// H2PingIdleTimeoutSeconds: 显式覆盖 NVIDIA 共享池 H2 PING 的空闲超时（秒）。
+	// 0 时退回全局默认 15s；放慢到 60-90s 等值可以大幅减少 130 账号背景下的 PING 流量，
+	// 同时仍可在 IdleConnTimeoutSeconds 兜底前剔除死连接。
+	H2PingIdleTimeoutSeconds int `mapstructure:"h2_ping_idle_timeout_seconds"`
 }
 
 // GatewayOpenAIProxyStreamCircuitConfig controls the bounded, in-process

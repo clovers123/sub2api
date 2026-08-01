@@ -114,6 +114,12 @@ type poolSettings struct {
 	maxConnsPerHost       int           // 每主机最大连接数（含活跃）
 	idleConnTimeout       time.Duration // 空闲连接超时时间
 	responseHeaderTimeout time.Duration // 等待响应头超时时间
+
+	// h2PingIdleTimeout / h2PingTimeout 为 HTTP/2 健康探测的显式覆盖值。
+	// 零值 → 退回默认 15s 路径（保持 OpenAI 现有行为）；非零值用于 NVIDIA 共享池
+	// 等需要放慢 PING 频率的场景（避免 130 账号背后 15s PING 风暴）。
+	h2PingIdleTimeout time.Duration
+	h2PingTimeout     time.Duration
 }
 
 type openAIHTTP2Settings struct {
@@ -1115,18 +1121,25 @@ func (s *httpUpstreamService) applyProfilePoolSettings(settings poolSettings, pr
 	if s != nil && s.cfg != nil && s.cfg.Gateway.NvidiaSharedConnectionPool.IdleConnTimeoutSeconds > 0 {
 		settings.idleConnTimeout = time.Duration(s.cfg.Gateway.NvidiaSharedConnectionPool.IdleConnTimeoutSeconds) * time.Second
 	}
+
+	// NVIDIA 共享池 H2 PING 间隔显式覆盖。0 退回默认 15s；放慢到 60s 等价位
+	// 减少 130 账号背景下 PING 风暴的同时仍能在 IdleConnTimeout 兜底前剔除死连接。
+	if s != nil && s.cfg != nil && s.cfg.Gateway.NvidiaSharedConnectionPool.H2PingIdleTimeoutSeconds > 0 {
+		settings.h2PingIdleTimeout = time.Duration(s.cfg.Gateway.NvidiaSharedConnectionPool.H2PingIdleTimeoutSeconds) * time.Second
+	}
 	return settings
 }
 
 // buildPoolKey 构建连接池配置键，用于检测连接池配置变更。
 func buildPoolKey(settings poolSettings, protocolMode string) string {
 	base := fmt.Sprintf(
-		"idle:%d|idle_host:%d|max:%d|idle_timeout:%s|header_timeout:%s",
+		"idle:%d|idle_host:%d|max:%d|idle_timeout:%s|header_timeout:%s|ping_idle:%s",
 		settings.maxIdleConns,
 		settings.maxIdleConnsPerHost,
 		settings.maxConnsPerHost,
 		settings.idleConnTimeout,
 		settings.responseHeaderTimeout,
+		settings.h2PingIdleTimeout,
 	)
 	if protocolMode == "" || protocolMode == upstreamProtocolModeDefault {
 		return base
@@ -1575,8 +1588,16 @@ func buildUpstreamTransport(settings poolSettings, proxyURL *url.URL, protocolMo
 		transport.ForceAttemptHTTP2 = true
 		// 显式配置 http2 并启用 PING 健康探测，剔除代理/NAT 静默掐断的死连接，
 		// 避免请求挂在死连接上直到 TCP 重传超时（分钟级）。
-		if _, err := enableOpenAIHTTP2KeepAlive(transport); err != nil {
-			return nil, err
+		// settings.h2PingIdleTimeout>0 时走显式间隔（NVIDIA 共享池等慢速 PING），
+		// 否则等价于默认 15s 路径（向后兼容）。
+		if settings.h2PingIdleTimeout > 0 || settings.h2PingTimeout > 0 {
+			if _, err := enableOpenAIHTTP2KeepAliveWithPing(transport, settings.h2PingIdleTimeout, settings.h2PingTimeout); err != nil {
+				return nil, err
+			}
+		} else {
+			if _, err := enableOpenAIHTTP2KeepAlive(transport); err != nil {
+				return nil, err
+			}
 		}
 	case upstreamProtocolModeOpenAIH1:
 		transport.ForceAttemptHTTP2 = false
@@ -1597,13 +1618,28 @@ func buildUpstreamTransport(settings poolSettings, proxyURL *url.URL, protocolMo
 // 静默掐断的死连接。此处主动设置 ReadIdleTimeout/PingTimeout，让死连接被提前 PING
 // 出并关闭，请求得以重建连接而非挂到 TCP 重传超时。返回底层 *http2.Transport 便于测试。
 func enableOpenAIHTTP2KeepAlive(transport *http.Transport) (*http2.Transport, error) {
+	return enableOpenAIHTTP2KeepAliveWithPing(transport, openAIHTTP2ReadIdleTimeout, openAIHTTP2PingTimeout)
+}
+
+// enableOpenAIHTTP2KeepAliveWithPing 同上但允许调用者显式提供 ReadIdleTimeout / PingTimeout。
+// 当 readIdleTimeout 或 pingTimeout 为 0 时退回到 15s 默认（保证 OpenAI 主路径行为不变），
+// 给 NVIDIA 共享池等需要放慢 PING 频率的 caller 留出出口。
+func enableOpenAIHTTP2KeepAliveWithPing(transport *http.Transport, readIdleTimeout, pingTimeout time.Duration) (*http2.Transport, error) {
 	h2, err := http2.ConfigureTransports(transport)
 	if err != nil {
 		return nil, err
 	}
 	if h2 != nil {
-		h2.ReadIdleTimeout = openAIHTTP2ReadIdleTimeout
-		h2.PingTimeout = openAIHTTP2PingTimeout
+		if readIdleTimeout > 0 {
+			h2.ReadIdleTimeout = readIdleTimeout
+		} else {
+			h2.ReadIdleTimeout = openAIHTTP2ReadIdleTimeout
+		}
+		if pingTimeout > 0 {
+			h2.PingTimeout = pingTimeout
+		} else {
+			h2.PingTimeout = openAIHTTP2PingTimeout
+		}
 	}
 	return h2, nil
 }
