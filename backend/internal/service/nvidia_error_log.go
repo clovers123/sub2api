@@ -28,7 +28,7 @@ var (
 	nvidiaErrorLogBearerRE   = regexp.MustCompile(`(?i)Bearer\s+[0-9A-Za-z._\-]{8,}`)
 )
 
-// logNvidiaUpstreamError emits a uniform, desensitized warning for any NVIDIA
+// logNVIDIAUpstreamError emits a uniform, desensitized warning for any NVIDIA
 // upstream failure. Every NVIDIA error path MUST funnel through this helper so
 // that:
 //   - account credentials (api_key, bearer, OAuth tokens, nvapi-*) never appear in raw form
@@ -38,7 +38,7 @@ var (
 // Always pass the redacted body through logredact.RedactText even when it looks
 // like a JSON error: a misconfigured proxy can embed Authorization headers in
 // the error body.
-func logNvidiaUpstreamError(ctx context.Context, account *Account, statusCode int, body []byte, reason string) {
+func logNVIDIAUpstreamError(ctx context.Context, account *Account, statusCode int, body []byte, reason string) {
 	fields := []any{
 		slog.String("platform", platformForLog(account)),
 		slog.Int64("account_id", accountIDForLog(account)),

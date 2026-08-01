@@ -33,11 +33,23 @@ type NVIDIASharedConnectionPoolMetrics struct {
 // ReusedTotal without locking; only map access is mutex-protected.
 // recentFailCount tracks recent upstream failures (5xx/429/exhausted) to
 // down-weight accounts with degraded reliability in the sorting heat.
+// consecutiveReuseSuccess 反映连续成功调用次数，每达到 nvidiaReuseSuccessDecayThreshold
+// 后重置 recentFailCount=0，实现"成功冲抵失败"的衰减机制 (F4)。
 type nvidiaAccountReuseState struct {
-	reusedTotal      atomic.Int64
-	lastReuseAtNano  atomic.Int64
-	recentFailCount  atomic.Int64
+	reusedTotal              atomic.Int64
+	lastReuseAtNano          atomic.Int64
+	recentFailCount          atomic.Int64
+	consecutiveReuseSuccess  atomic.Int64
+	// F9: 记录最近一次失败时间(unix-nano)，与 lastReuseAtNano 对称。
+	// 当前仅写入不读取，为后续可能引入"基于时间窗的衰减"留钩子；N3 当前
+	// 仍靠 consecutiveReuseSuccess 驱动衰减以保持 hot-path 无锁。
+	lastFailAtNano           atomic.Int64
 }
+
+// nvidiaReuseSuccessDecayThreshold 是连续成功 reuse 次数阈值，达到后清除
+// recentFailCount，避免账号一次事故被永久压在 sort 末尾的"黑洞"问题 (F4)。
+// 选 5 次为平衡点：足够小让恢复快，足够大避免单次偶发成功就清零惩罚。
+const nvidiaReuseSuccessDecayThreshold = 5
 
 // NVIDIAAccountReuseSnapshot is the read-only view of an account's reuse events.
 type NVIDIAAccountReuseSnapshot struct {
@@ -140,6 +152,14 @@ func (m *NVIDIASharedConnectionPoolMetrics) RecordAccountReuse(accountID int64, 
 	m.accountReuseMu.Unlock()
 
 	state.reusedTotal.Add(1)
+	// F4: 连续成功 reuse 累积到 decayThreshold 后清零 recentFailCount，
+	// 避免账号一次事故后长期被压在 sort 末尾。每次 reuse 成功 +1，达到阈值
+	// 后重置 (consecutiveReuseSuccess 归零 + recentFailCount 归零)，让账号
+	// 在 NVIDIA 容量恢复后能重新参与热排序。
+	if state.consecutiveReuseSuccess.Add(1) >= nvidiaReuseSuccessDecayThreshold {
+		state.recentFailCount.Store(0)
+		state.consecutiveReuseSuccess.Store(0)
+	}
 	ts := at.UnixNano()
 	for {
 		old := state.lastReuseAtNano.Load()
@@ -152,14 +172,14 @@ func (m *NVIDIASharedConnectionPoolMetrics) RecordAccountReuse(accountID int64, 
 	}
 }
 
-// RecordAccountFail increments the per-account recent failure counter.
-// The scheduler (nvidiaReuseHeatFor) down-weights hot accounts whose recent
-// upstream calls have failed to avoid hammering degraded accounts.
-// Failures are attenuated naturally by successful reuses which carry positive
-// heat; a single decay sweep is intentionally not implemented here — N3 keeps
-// the read path lock-free, and any account blocked by cool-down already exits
-// the candidate set before heat comparison.
-func (m *NVIDIASharedConnectionPoolMetrics) RecordAccountFail(accountID int64) {
+// RecordAccountFail increments the per-account recent failure counter and stamps
+// the latest failure timestamp. The scheduler (nvidiaReuseHeatFor) down-weights
+// hot accounts whose recent upstream calls have failed to avoid hammering
+// degraded accounts. at is kept for ABI symmetry with RecordAccountReuse; the
+// current scheduler reads recentFailCount + consecutiveReuseSuccess only, but
+// at is recorded as a forward hook for time-windowed decay without requiring
+// another signature change.
+func (m *NVIDIASharedConnectionPoolMetrics) RecordAccountFail(accountID int64, at time.Time) {
 	if m == nil || accountID <= 0 {
 		return
 	}
@@ -175,6 +195,21 @@ func (m *NVIDIASharedConnectionPoolMetrics) RecordAccountFail(accountID int64) {
 	m.accountReuseMu.Unlock()
 
 	state.recentFailCount.Add(1)
+	state.consecutiveReuseSuccess.Store(0)
+	// F4: 失败打断连续成功链，让衰减阈值重新计算，避免短暂偶发成功就清零大量失败计数
+	casLastFailAtNano(state, at.UnixNano())
+}
+
+func casLastFailAtNano(state *nvidiaAccountReuseState, ts int64) {
+	for {
+		old := state.lastFailAtNano.Load()
+		if ts <= old {
+			break
+		}
+		if state.lastFailAtNano.CompareAndSwap(old, ts) {
+			break
+		}
+	}
 }
 
 // SnapshotAccountReuse returns a point-in-time view of an account's reuse state.
