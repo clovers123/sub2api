@@ -1148,6 +1148,21 @@ export default {
           loadingError: 'Failed to load NVIDIA shared connection pool settings',
           restartBadge: 'Restart required',
           softReloadBadge: 'Soft reload (existing connections retain old timeouts)'
+        },
+        consecutive5xx: {
+          title: 'NVIDIA Consecutive 5xx Cooldown',
+          description: 'Auto-cool an NVIDIA account when it produces too many 5xx errors within a short window. The account is temporarily excluded from scheduling and auto-rejoins after cooldown. Hot-reload: next 5xx failure picks up the new values immediately.',
+          thresholdLabel: 'Consecutive 5xx threshold',
+          thresholdHint: 'Number of consecutive 5xx failures (within the window below) before the account is temporarily cooled (1-100).',
+          windowSecondsLabel: 'Window (seconds)',
+          windowSecondsHint: 'Maximum time window in seconds within which the consecutive 5xx count is accumulated (1-3600).',
+          cooldownSecondsLabel: 'Cooldown (seconds)',
+          cooldownSecondsHint: 'How long the account stays out of scheduling once the threshold is reached (1-3600).',
+          hotReloadBadge: 'Hot reload',
+          hotReloadDescription: 'New settings take effect on the next 5xx failure — no restart required.',
+          saved: 'NVIDIA consecutive 5xx cooldown settings saved; effective on next 5xx failure.',
+          saveFailed: 'Failed to save NVIDIA consecutive 5xx cooldown settings',
+          loadingError: 'Failed to load NVIDIA consecutive 5xx cooldown settings'
         }
       },
       rectifier: {

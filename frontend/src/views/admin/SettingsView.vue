@@ -6397,6 +6397,75 @@
         </div>
         <!-- /NVIDIA Shared Connection Pool -->
 
+        <!-- NVIDIA Consecutive 5xx Cooldown -->
+        <div v-show="activeTab === 'gateway'" class="card" data-testid="nvidia-consecutive-5xx-card">
+          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              {{ t("admin.settings.nvidia.consecutive5xx.title") }}
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              {{ t("admin.settings.nvidia.consecutive5xx.description") }}
+            </p>
+          </div>
+          <div class="space-y-6 p-6">
+            <div>
+              <label class="mb-1 block text-sm font-medium text-gray-900 dark:text-dark-100">
+                {{ t("admin.settings.nvidia.consecutive5xx.thresholdLabel") }}
+              </label>
+              <input
+                v-model.number="form.nvidia_consecutive_5xx_threshold"
+                type="number"
+                min="1"
+                max="100"
+                class="w-full rounded border bg-white px-3 py-2 text-sm dark:bg-dark-700 dark:text-dark-100"
+                data-testid="nvidia-consecutive-5xx-threshold"
+              />
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {{ t("admin.settings.nvidia.consecutive5xx.thresholdHint") }}
+              </p>
+            </div>
+            <div>
+              <label class="mb-2 block text-sm font-medium text-gray-900 dark:text-dark-100">
+                {{ t("admin.settings.nvidia.consecutive5xx.windowSecondsLabel") }}
+              </label>
+              <input
+                v-model.number="form.nvidia_consecutive_5xx_window_seconds"
+                type="number"
+                min="1"
+                max="3600"
+                class="w-full rounded border bg-white px-3 py-2 text-sm dark:bg-dark-700 dark:text-dark-100"
+                data-testid="nvidia-consecutive-5xx-window-seconds"
+              />
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {{ t("admin.settings.nvidia.consecutive5xx.windowSecondsHint") }}
+              </p>
+            </div>
+            <div>
+              <label class="mb-2 block text-sm font-medium text-gray-900 dark:text-dark-100">
+                {{ t("admin.settings.nvidia.consecutive5xx.cooldownSecondsLabel") }}
+              </label>
+              <input
+                v-model.number="form.nvidia_consecutive_5xx_cooldown_seconds"
+                type="number"
+                min="1"
+                max="3600"
+                class="w-full rounded border bg-white px-3 py-2 text-sm dark:bg-dark-700 dark:text-dark-100"
+                data-testid="nvidia-consecutive-5xx-cooldown-seconds"
+              />
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {{ t("admin.settings.nvidia.consecutive5xx.cooldownSecondsHint") }}
+              </p>
+            </div>
+            <p class="text-xs text-gray-500 dark:text-gray-400">
+              <span class="inline-flex items-center gap-1 rounded bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900 dark:text-green-200">
+                {{ t("admin.settings.nvidia.consecutive5xx.hotReloadBadge") }}
+              </span>
+              {{ t("admin.settings.nvidia.consecutive5xx.hotReloadDescription") }}
+            </p>
+          </div>
+        </div>
+        <!-- /NVIDIA Consecutive 5xx Cooldown -->
+
         <!-- /Tab: Gateway — Claude Code, Scheduling -->
 
         <!-- Tab: General -->
@@ -9932,6 +10001,11 @@ const form = reactive<SettingsForm>({
   nvidia_shared_connection_pool_prewarm_enabled: false,
   nvidia_shared_connection_pool_prewarm_interval_sec: 240,
   nvidia_shared_connection_pool_h2_ping_idle_timeout_sec: 0,
+
+  // NVIDIA consecutive 5xx cooldown (hot-reload on next 5xx)
+  nvidia_consecutive_5xx_threshold: 3,
+  nvidia_consecutive_5xx_window_seconds: 60,
+  nvidia_consecutive_5xx_cooldown_seconds: 120,
 });
 
 // 人机验证 UI 状态：单卡片「总开关 + 服务商单选」，落库仍是三个独立
@@ -11605,6 +11679,15 @@ async function saveSettings() {
       ),
       nvidia_shared_connection_pool_h2_ping_idle_timeout_sec: Number(
         form.nvidia_shared_connection_pool_h2_ping_idle_timeout_sec,
+      ),
+      nvidia_consecutive_5xx_threshold: Number(
+        form.nvidia_consecutive_5xx_threshold,
+      ),
+      nvidia_consecutive_5xx_window_seconds: Number(
+        form.nvidia_consecutive_5xx_window_seconds,
+      ),
+      nvidia_consecutive_5xx_cooldown_seconds: Number(
+        form.nvidia_consecutive_5xx_cooldown_seconds,
       ),
     };
 

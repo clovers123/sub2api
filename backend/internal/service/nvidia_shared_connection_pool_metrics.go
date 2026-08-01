@@ -35,6 +35,12 @@ type NVIDIASharedConnectionPoolMetrics struct {
 // down-weight accounts with degraded reliability in the sorting heat.
 // consecutiveReuseSuccess 反映连续成功调用次数，每达到 nvidiaReuseSuccessDecayThreshold
 // 后重置 recentFailCount=0，实现"成功冲抵失败"的衰减机制 (F4)。
+//
+// P1 连续 5xx 自动冷却：consecutive5xxCount 跟踪"连续 NVIDIA 5xx 失败次数"，
+// first5xxAtNano 记录窗口内第一次 5xx 的时间戳。RecordConsecutive5xxReached
+// 在累计数超过 threshold 且首末失败间隔仍在 window 内时返回 true——上游调用方
+// 接住信号触发 BlockAccountScheduling。一次成功 RecordAccountReuse 会清零
+// consecutive5xxCount + first5xxAtNano，让账号恢复后立即重新轮换。
 type nvidiaAccountReuseState struct {
 	reusedTotal              atomic.Int64
 	lastReuseAtNano          atomic.Int64
@@ -44,6 +50,9 @@ type nvidiaAccountReuseState struct {
 	// 当前仅写入不读取，为后续可能引入"基于时间窗的衰减"留钩子；N3 当前
 	// 仍靠 consecutiveReuseSuccess 驱动衰减以保持 hot-path 无锁。
 	lastFailAtNano           atomic.Int64
+	// P1: 连续 5xx 计数与窗口起点（unix-nano），用于触发短期 BlockAccountScheduling 冷却。
+	consecutive5xxCount      atomic.Int64
+	first5xxAtNano           atomic.Int64
 }
 
 // nvidiaReuseSuccessDecayThreshold 是连续成功 reuse 次数阈值，达到后清除
@@ -156,6 +165,12 @@ func (m *NVIDIASharedConnectionPoolMetrics) RecordAccountReuse(accountID int64, 
 	// 避免账号一次事故后长期被压在 sort 末尾。每次 reuse 成功 +1，达到阈值
 	// 后重置 (consecutiveReuseSuccess 归零 + recentFailCount 归零)，让账号
 	// 在 NVIDIA 容量恢复后能重新参与热排序。
+	// P1: 同时清零连续 5xx 计数 + 窗口起点。成功即代表账号当前可服务，
+	// 之前的"集中 5xx 爆发"周期结束；下一次累计从 0 开始。
+	if state.consecutive5xxCount.Load() > 0 {
+		state.consecutive5xxCount.Store(0)
+		state.first5xxAtNano.Store(0)
+	}
 	if state.consecutiveReuseSuccess.Add(1) >= nvidiaReuseSuccessDecayThreshold {
 		state.recentFailCount.Store(0)
 		state.consecutiveReuseSuccess.Store(0)
@@ -198,6 +213,59 @@ func (m *NVIDIASharedConnectionPoolMetrics) RecordAccountFail(accountID int64, a
 	state.consecutiveReuseSuccess.Store(0)
 	// F4: 失败打断连续成功链，让衰减阈值重新计算，避免短暂偶发成功就清零大量失败计数
 	casLastFailAtNano(state, at.UnixNano())
+}
+
+// RecordConsecutive5xx records a single NVIDIA 5xx failure as part of a
+// consecutive streak and reports whether the streak plus time-window now
+// qualifies the account for a short scheduling cooldown.
+//
+// Algorithm:
+//  1. Bump consecutive5xxCount.
+//  2. If this is the first failure (count == 1), stamp first5xxAtNano = now.
+//  3. When count >= threshold, check window: if (now - first5xxAtNano) <= window,
+//     return reached=true and reset the streak (caller must call again after the
+//     cooldown ends, so we don't keep re-triggering). Otherwise reset the streak
+//     (stale burst) and return false.
+//  4. Otherwise (count < threshold) return false (still accumulating).
+//
+// The check and reset are atomic as a single caller (recordNVIDIAUpstreamFailure)
+// holds the per-failure verbose path; concurrent 5xx from different goroutines on
+// the same account are rare but possible—they will simply race on the count and
+// one of them will win the threshold race, the others may cause a redundant
+// reset, which is harmless (the next 5xx starts a fresh streak).
+//
+// at is the canonical failure time; pass time.Now() at the call site.
+func (m *NVIDIASharedConnectionPoolMetrics) RecordConsecutive5xx(accountID int64, at time.Time, threshold int, window time.Duration) (reached bool) {
+	if m == nil || accountID <= 0 || threshold <= 0 || window <= 0 {
+		return false
+	}
+	m.accountReuseMu.Lock()
+	if m.accountReuseBy == nil {
+		m.accountReuseBy = make(map[int64]*nvidiaAccountReuseState)
+	}
+	state, ok := m.accountReuseBy[accountID]
+	if !ok {
+		state = &nvidiaAccountReuseState{}
+		m.accountReuseBy[accountID] = state
+	}
+	m.accountReuseMu.Unlock()
+
+	nowNano := at.UnixNano()
+	count := state.consecutive5xxCount.Add(1)
+	if count == 1 {
+		state.first5xxAtNano.Store(nowNano)
+		return false
+	}
+	if count < int64(threshold) {
+		return false
+	}
+	// count >= threshold: evaluate window
+	firstNano := state.first5xxAtNano.Load()
+	elapsed := at.Sub(time.Unix(0, firstNano))
+	// Reset the streak regardless of result so we don't re-fire on every subsequent 5xx.
+	state.consecutive5xxCount.Store(0)
+	state.first5xxAtNano.Store(0)
+	return elapsed <= window
 }
 
 func casLastFailAtNano(state *nvidiaAccountReuseState, ts int64) {

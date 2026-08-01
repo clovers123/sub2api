@@ -1203,6 +1203,17 @@ const (
 	nvidiaSharedPoolH2PingIdleTimeoutSecMax = 600
 )
 
+// NVIDIA 连续 5xx 自动冷却边界常量（P1 方案）。
+// 默认 3 次 / 60 秒窗口 / 120 秒冷却在 domain_constants.go 侧边注释与前端文案对齐。
+const (
+	nvidiaConsecutive5xxThresholdMin      = 1
+	nvidiaConsecutive5xxThresholdMax      = 100
+	nvidiaConsecutive5xxWindowSecMin      = 1
+	nvidiaConsecutive5xxWindowSecMax      = 3600
+	nvidiaConsecutive5xxCooldownSecMin    = 1
+	nvidiaConsecutive5xxCooldownSecMax    = 3600
+)
+
 // GetNVIDIAAdaptiveThrottleSettings 读取 NVIDIA 自适应节流运行时配置（typed）。
 //
 // 实现要点：

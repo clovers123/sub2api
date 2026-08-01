@@ -742,6 +742,11 @@ export interface SystemSettings {
   nvidia_shared_connection_pool_prewarm_enabled: boolean;
   nvidia_shared_connection_pool_prewarm_interval_sec: number;
   nvidia_shared_connection_pool_h2_ping_idle_timeout_sec: number;
+
+  // NVIDIA consecutive 5xx cooldown (DB-backed; hot-reload on next failure, no restart)
+  nvidia_consecutive_5xx_threshold: number;
+  nvidia_consecutive_5xx_window_seconds: number;
+  nvidia_consecutive_5xx_cooldown_seconds: number;
 }
 
 export interface UpdateSettingsRequest {
@@ -1050,6 +1055,10 @@ export interface UpdateSettingsRequest {
   nvidia_shared_connection_pool_prewarm_enabled?: boolean;
   nvidia_shared_connection_pool_prewarm_interval_sec?: number;
   nvidia_shared_connection_pool_h2_ping_idle_timeout_sec?: number;
+
+  nvidia_consecutive_5xx_threshold?: number;
+  nvidia_consecutive_5xx_window_seconds?: number;
+  nvidia_consecutive_5xx_cooldown_seconds?: number;
 }
 
 /**
