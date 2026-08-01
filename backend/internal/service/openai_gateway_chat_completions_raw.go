@@ -220,33 +220,36 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 			}
 			return s.handleChatCompletionsErrorResponse(resp, c, account, billingModel)
 		}
-		// N2: NVIDIA 400 "Unsupported parameter(s)" → 自动解析字段名 + sjson 剥离 + 同账号重试一次。
-		// 第一次 400 时只剥离字段并重发；若重试还是 400 则按正常 failover 处理。
+		// F5: N2 NVIDIA 400 "Unsupported parameter(s)" 抽为独立 helper 防 goto 跨 scope。
+		// tryNVIDIAUnsupportedParameterRetryOnce 内部完成"剥离字段 + 重发一次"，返回
+		// (retryResp, sendErr)。caller 负责判断: 成功 → 替换 resp 跳过 failover；
+		// 失败 → 走原本 failover 路径。helper 不再使用 goto，控制流边界清晰。
 		if resp.StatusCode == http.StatusBadRequest && isNVIDIAAccountByHostname(account) {
 			if fields := detectNVIDIAUnsupportedParameterError(resp.StatusCode, respBody); len(fields) > 0 {
-				retryBody, retryable, _ := tryNVIDIARetryOnUnsupportedParameter(respBody, upstreamBody)
-				if retryable {
-					_ = resp.Body.Close()
-					logNVIDIAUnsupportedParameterRetry(ctx, account, fields, "retry_attempted")
-					retryResp, retryErr := s.sendCCUpstreamRequest(ctx, c, account, targetURL, retryBody, clientStream, token, customUA, grokCacheIdentity, s.chatCompletionsHTTPUpstreamProfile(account, targetParsedURL))
-					if retryErr != nil {
-						logNVIDIAUnsupportedParameterRetry(ctx, account, fields, "retry_send_error")
-						return nil, retryErr
+				retryResp, sendErr, retried := s.tryNVIDIAUnsupportedParameterRetryOnce(
+					ctx, c, account, targetURL, upstreamBody, clientStream,
+					token, customUA, grokCacheIdentity, targetParsedURL,
+					respBody, fields,
+				)
+				if retried {
+					if sendErr != nil {
+						// F2: retry send error 已在 helper 内记 N3 失败计数 + N2 日志
+						return nil, sendErr
 					}
 					// 替换 resp 给 defer 与后续路径
+					_ = resp.Body.Close()
 					resp = retryResp
 					if resp.StatusCode < 400 {
 						logNVIDIAUnsupportedParameterRetry(ctx, account, fields, "retry_success")
 						goto nvidiaRetrySucceeded
-					} else {
-						// 重试仍失败 → 记日志 + 走原本 failover 路径
-						logNVIDIAUnsupportedParameterRetry(ctx, account, fields, "retry_still_failed")
-						retryRespBody, retryUpstreamMsg := s.readOpenAIUpstreamError(resp)
-						if foErr := s.failoverOpenAIUpstreamHTTPError(ctx, c, account, resp, retryRespBody, retryUpstreamMsg, upstreamModel); foErr != nil {
-							return nil, foErr
-						}
-						return s.handleChatCompletionsErrorResponse(resp, c, account, billingModel)
 					}
+					// 重试仍 >=400 → 记日志 + 走原本 failover 路径
+					logNVIDIAUnsupportedParameterRetry(ctx, account, fields, "retry_still_failed")
+					retryRespBody, retryUpstreamMsg := s.readOpenAIUpstreamError(resp)
+					if foErr := s.failoverOpenAIUpstreamHTTPError(ctx, c, account, resp, retryRespBody, retryUpstreamMsg, upstreamModel); foErr != nil {
+						return nil, foErr
+					}
+					return s.handleChatCompletionsErrorResponse(resp, c, account, billingModel)
 				}
 			}
 		}
@@ -274,6 +277,48 @@ nvidiaRetrySucceeded:
 		result.UpstreamEndpoint = grokChatRawEndpoint
 	}
 	return result, forwardErr
+}
+
+// tryNVIDIAUnsupportedParameterRetryOnce 是 N2 NVIDIA 400 Unsupported parameter
+// 降级重试的独立 helper (F5 抽取)，避免与 caller 共用 scope 让 goto 跨越变量声明。
+//
+// 流程：
+//   1. detectNVIDIAUnsupportedParameterError 解析出被 NVIDIA 拒绝的字段名
+//   2. tryNVIDIARetryOnUnsupportedParameter sjson 剥离字段
+//   3. sendCCUpstreamRequest 重发一次同账号请求
+//   4. 若 send 失败 (网络层)：记 N2 retry_send_error 日志 + N3 失败计数 (F2)
+//   5. 返回 (retryResp, sendErr, retried=true) 让 caller 决定后续走 success 还是 failover
+//
+// caller 责任：替换外层 resp 变量、判断 resp.StatusCode 决定 goto success 还是 failover。
+//
+// retried=false 表示根本不是 NVIDIA unsupported parameter 错误或不该重试（caller 不动 resp）。
+func (s *OpenAIGatewayService) tryNVIDIAUnsupportedParameterRetryOnce(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	targetURL string,
+	upstreamBody []byte,
+	clientStream bool,
+	token, customUA, grokCacheIdentity string,
+	targetParsedURL *url.URL,
+	respBody []byte,
+	fields []string,
+) (retryResp *http.Response, sendErr error, retried bool) {
+	retryBody, retryable, _ := tryNVIDIARetryOnUnsupportedParameter(respBody, upstreamBody)
+	if !retryable {
+		return nil, nil, false
+	}
+	logNVIDIAUnsupportedParameterRetry(ctx, account, fields, "retry_attempted")
+	retryResp, sendErr = s.sendCCUpstreamRequest(ctx, c, account, targetURL, retryBody, clientStream, token, customUA, grokCacheIdentity, s.chatCompletionsHTTPUpstreamProfile(account, targetParsedURL))
+	if sendErr != nil {
+		// F2: retry 在网络层失败（dial timeout / conn reset 等）不仅记 N2 日志，
+		// 还要计入 N3 recentFailCount 让调度器看到该账号持续不可达。
+		// statusCode=0 表示 retry send 失败（不是上游响应失败）。
+		logNVIDIAUnsupportedParameterRetry(ctx, account, fields, "retry_send_error")
+		recordNVIDIAUpstreamFailure(s, ctx, account, 0, retryRespBodyOrEmpty(retryResp), nvidiaReasonRetrySendError)
+		return nil, sendErr, true
+	}
+	return retryResp, nil, true
 }
 
 func (s *OpenAIGatewayService) rawChatCompletionsURL(account *Account) (string, error) {

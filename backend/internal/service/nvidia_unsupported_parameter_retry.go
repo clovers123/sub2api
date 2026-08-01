@@ -2,8 +2,7 @@ package service
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"strings"
@@ -144,6 +143,18 @@ func detectNVIDIAUnsupportedParameterError(statusCode int, responseBody []byte) 
 	return result
 }
 
+// retryRespBodyOrEmpty 在 retryResp 为 nil (sendCCUpstreamRequest 网络层失败、未拿到任何响应) 时
+// 返回空 slice，避免 N3 recordNVIDIAUpstreamFailure 在读 body 时 nil deref。
+// 命中 retry send_error 路径时 retryResp 通常是 nil。
+func retryRespBodyOrEmpty(retryResp *http.Response) []byte {
+	if retryResp == nil || retryResp.Body == nil {
+		return nil
+	}
+	defer func() { _ = retryResp.Body.Close() }()
+	body, _ := io.ReadAll(retryResp.Body)
+	return body
+}
+
 // logNVIDIAUnsupportedParameterRetry 在重试成功或失败时统一记录日志。
 // 通过统一入口让运维在 grep `nvidia_unsupported_parameter_retry` 时
 // 能看到所有 NVIDIA 400 重试事件（不论成败）。
@@ -155,26 +166,3 @@ func logNVIDIAUnsupportedParameterRetry(ctx context.Context, account *Account, f
 	)
 }
 
-// formatNVIDIAUnsupportedFields 用于错误信息和日志中转出可读字段名列表。
-func formatNVIDIAUnsupportedFields(fields []string) string {
-	if len(fields) == 0 {
-		return ""
-	}
-	b, _ := json.Marshal(fields)
-	return string(b)
-}
-
-// nvidiaUnsupportedParameterError 包装 NVIDIA 上游 400 unsupported parameter 错误，
-// 供 caller 在 fail-over 或返回客户端时给出更明确的错误消息。
-type nvidiaUnsupportedParameterError struct {
-	StatusCode int
-	Fields     []string
-	RawBody    []byte
-}
-
-func (e *nvidiaUnsupportedParameterError) Error() string {
-	if len(e.Fields) > 0 {
-		return fmt.Sprintf("nvidia unsupported parameter: %s", strings.Join(e.Fields, ", "))
-	}
-	return "nvidia unsupported parameter"
-}
