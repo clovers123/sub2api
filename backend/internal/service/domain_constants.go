@@ -679,18 +679,18 @@ const (
 	SettingKeyWebSearchEmulationConfig = "web_search_emulation_config" // JSON 配置
 
 	// NVIDIA 自适应节流（NVIDIA adaptive throttle）— 后端运行时配置 key。
-	// 仅在管理员显式启用时参与调度；默认关闭，状态 TTL / 间隔 / 短等待使用安全默认值。
+	// 默认启用，状态 TTL / 间隔 / 短等待使用安全默认值；管理员可在 UI 关闭。
 	// Task 1 仅落地设置键、解析、持久化与 typed read，Redis / 调度 / timer 留待后续 Task。
-	SettingKeyNVIDIAAdaptiveThrottleEnabled           = "nvidia_adaptive_throttle_enabled"             // bool，默认 "false"
+	SettingKeyNVIDIAAdaptiveThrottleEnabled           = "nvidia_adaptive_throttle_enabled"             // bool，默认 "true"
 	SettingKeyNVIDIAAdaptiveThrottleStateTTLMinutes   = "nvidia_adaptive_throttle_state_ttl_minutes"   // int，默认 30，范围 1..1440
 	SettingKeyNVIDIAAdaptiveThrottleMaxSpacingSeconds = "nvidia_adaptive_throttle_max_spacing_seconds" // int，默认 30，范围 1..300
 	SettingKeyNVIDIAAdaptiveThrottleShortWaitMs       = "nvidia_adaptive_throttle_short_wait_ms"       // int，默认 2000，范围 0..10000
 
 	// NVIDIA 共享连接池 — DB 持久化（"软重启生效"：新连接才遵守新值；老 keepalive 连接保持到 idle 超时）。
 	// 运行时仍由 config 文件 + 启动时构造的 HTTP transport 控制；DB 仅供 UI 当前值显示与未来 reload hook 接入。
-	SettingKeyNVIDIASharedConnectionPoolEnabled             = "nvidia_shared_connection_pool_enabled"               // bool，默认 "false"
+	SettingKeyNVIDIASharedConnectionPoolEnabled             = "nvidia_shared_connection_pool_enabled"               // bool，默认 "true"
 	SettingKeyNVIDIASharedConnectionPoolIdleConnTimeoutSec  = "nvidia_shared_connection_pool_idle_conn_timeout_sec"  // int，默认 600，范围 0..86400（0 = 走 gateway 全局 idle_conn_timeout_seconds）
-	SettingKeyNVIDIASharedConnectionPoolPrewarmEnabled     = "nvidia_shared_connection_pool_prewarm_enabled"       // bool，默认 "false"
+	SettingKeyNVIDIASharedConnectionPoolPrewarmEnabled     = "nvidia_shared_connection_pool_prewarm_enabled"       // bool，默认 "true"
 	SettingKeyNVIDIASharedConnectionPoolPrewarmIntervalSec = "nvidia_shared_connection_pool_prewarm_interval_sec"   // int，默认 240，范围 0..86400（0 = 仅启动时预热一次）
 	SettingKeyNVIDIASharedConnectionPoolH2PingIdleTimeoutSec = "nvidia_shared_connection_pool_h2_ping_idle_timeout_sec" // int，默认 0，范围 0..600（0 = 走全局默认 15s）
 )
