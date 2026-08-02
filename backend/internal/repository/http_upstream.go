@@ -244,6 +244,13 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 		return nil, err
 	}
 
+	// N1: NVIDIA stale socket probe — 复用 idle socket 前探活，防止撞上游静默关闭的长连接。
+	// 探针用同一个 client 发 GET /v1/models, 成功则复用，失败则 CloseIdleConnections
+	// 让后续实际请求走新 socket。探针不污染节流记录，不失败父请求。
+	if profile == service.HTTPUpstreamProfileNVIDIA && req != nil && req.URL != nil {
+		s.nvidiaStaleSocketProbe(req.URL.Scheme+"://"+req.URL.Host, entry)
+	}
+
 	// 执行请求
 	client := httpClientForUpstreamRequest(entry.client, req)
 	client = httpClientWithGrokAccessDeniedFallback(client)
@@ -761,6 +768,15 @@ const (
 	nvidiaPrewarmBodyDrainLimit = 64 << 10
 )
 
+// NVIDIA stale socket 探活相关常量（N1）
+const (
+	// nvidiaStaleProbeTimeout: 探针请求自身超时。短于实际请求的 retry 超时，
+	// 避免探针抢走流量配额。
+	nvidiaStaleProbeTimeout = 5 * time.Second
+	// nvidiaStaleProbeEndpoint: 与 prewarm 共享 models endpoint 作为探测目标。
+	nvidiaStaleProbeEndpoint = "/v1/models"
+)
+
 // PrewarmNVIDIAConnection 对指定代理（空字符串表示直连）预热 NVIDIA 上游连接。
 // 复用 NVIDIA 共享连接池的客户端条目，发送一次不携带凭据的 GET /v1/models
 // 探测请求，完成 TCP+TLS+H2 建连。任何 HTTP 状态码（含 401）均视为成功，
@@ -806,6 +822,43 @@ func (s *httpUpstreamService) prewarmNVIDIAConnectionToBase(ctx context.Context,
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, nvidiaPrewarmBodyDrainLimit))
 	_ = resp.Body.Close()
 	return nil
+}
+
+// nvidiaStaleSocketProbe sends a HEAD request to NVIDIA /v1/models using the same
+// client before the real request. If the probe succeeds (any HTTP status code),
+// the idle socket is healthy and the real request can reuse it. If the probe
+// returns a transport error (EOF, connection reset), the idle socket is stale;
+// we close all idle connections in the pool so Go's http.Transport will dial a
+// fresh connection for the real request.
+//
+// The probe does NOT carry auth headers, does NOT count as a throttle signal,
+// and never fails the parent request — even if the probe itself errors, the
+// real request will still go through on a fresh socket.
+func (s *httpUpstreamService) nvidiaStaleSocketProbe(baseURL string, entry *upstreamClientEntry) {
+	if entry == nil || entry.client == nil {
+		return
+	}
+
+	target, err := url.Parse(strings.TrimRight(baseURL, "/") + nvidiaStaleProbeEndpoint)
+	if err != nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), nvidiaStaleProbeTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+	if err != nil {
+		return
+	}
+
+	resp, err := entry.client.Do(req)
+	if err != nil {
+		entry.client.CloseIdleConnections()
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<10))
+	_ = resp.Body.Close()
 }
 
 // getOrCreateClient 获取或创建客户端
