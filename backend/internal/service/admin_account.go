@@ -538,7 +538,42 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 		}
 	}
 
+	// NVIDIA API-Key 账号：创建后异步探活 key 有效性。
+	// 探活失败不阻断创建（网络抖动可能误报），但 401/403 无效 key 会记 error 级
+	// 日志 + 告警，让管理员及时处理，避免无效 key 进入真实流量触发 24h 冷却。
+	s.scheduleNVIDIAAccountSmokeProbe(account)
+
 	return account, nil
+}
+
+// scheduleNVIDIAAccountSmokeProbe 对 NVIDIA API-Key 账号异步发起探活。
+// 探活使用 http.DefaultClient（低频一次性请求，无需专用 transport）。
+func (s *adminServiceImpl) scheduleNVIDIAAccountSmokeProbe(account *Account) {
+	if !shouldSmokeProbeNVIDIAAccount(account) {
+		return
+	}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("nvidia_smoke_probe_panic", "account_id", account.ID, "recover", r)
+			}
+		}()
+		result := ProbeNVIDIAAccountSmoke(context.Background(), http.DefaultClient, account)
+		result.Log(account.ID)
+	}()
+}
+
+// shouldSmokeProbeNVIDIAAccount 报告账号是否应触发 NVIDIA 创建探活：
+// OpenAI 平台 + API-Key 类型 + base_url 主机为 NVIDIA 官方 API 主机。
+func shouldSmokeProbeNVIDIAAccount(account *Account) bool {
+	if account == nil || account.Type != AccountTypeAPIKey || account.Platform != PlatformOpenAI {
+		return false
+	}
+	return isNVIDIAAccountByHostname(account)
+}
+
+type accountProbeEnabledAtomicUpdater interface {
+	UpdateWithUpstreamBillingProbeEnabled(context.Context, *Account, bool) error
 }
 
 func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *UpdateAccountInput) (*Account, error) {

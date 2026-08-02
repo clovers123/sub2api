@@ -247,6 +247,8 @@ func registerOpsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 
 		// NVIDIA shared connection pool metrics.
 		ops.GET("/nvidia-shared-connection-pool", h.Admin.Ops.GetNVIDIASharedConnectionPoolMetrics)
+		// NVIDIA adaptive throttle live counters (D: 实时命中率可视化).
+		ops.GET("/nvidia-adaptive-throttle", h.Admin.Ops.GetNVIDIAAdaptiveThrottleMetrics)
 
 		// Upstream errors (independent upstream failures)
 		ops.GET("/upstream-errors", h.Admin.Ops.ListUpstreamErrors)

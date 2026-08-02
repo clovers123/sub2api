@@ -344,7 +344,9 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 
 	// Success path: record a clean outcome to the NVIDIA adaptive throttle so the
 	// next Reserve window can widen again.
-	if handleErr == nil && result != nil && s.rateLimitService != nil {
+	// B: StreamInterrupted 的流不算成功——中断已在 streamRawChatCompletions
+	// 内记过失败信号，这里必须跳过 200 success 否则 AIMD spacing 错误减半。
+	if handleErr == nil && result != nil && !result.StreamInterrupted && s.rateLimitService != nil {
 		update := NvidiaThrottleUpdate{
 			Scope: NVIDIAThrottleScope{
 				AccountID:      account.ID,

@@ -258,6 +258,10 @@ type OpenAIForwardResult struct {
 	ReasoningEffort *string
 	Stream          bool
 	OpenAIWSMode    bool
+	// StreamInterrupted 标记上游 SSE 流被中途截断（非正常 [DONE] 结束）。
+	// success 路径据此跳过 NVIDIA adaptive throttle 的 200 success 记录，
+	// 避免把流中断错误记为成功导致 AIMD spacing 错误减半。
+	StreamInterrupted bool
 	// UpstreamTerminalEvent is the normalized terminal event observed on an
 	// upstream Responses WebSocket turn. Empty preserves legacy/non-WS success.
 	UpstreamTerminalEvent string

@@ -31,6 +31,7 @@ type RateLimitService struct {
 	tokenCacheInvalidator       TokenCacheInvalidator
 	runtimeBlocker              AccountRuntimeBlocker
 	nvidiaAdaptiveThrottleCache NvidiaAdaptiveThrottleCache
+	nvidiaThrottleL1           *nvidiaThrottleL1
 	nvidiaThrottleSettings      *nvidiaAdaptiveThrottleSettingsCache
 	nvidiaMetrics               *NVIDIAAdaptiveThrottleMetrics
 	nvidiaThrottleNow           func() time.Time
@@ -104,6 +105,12 @@ func NewRateLimitService(accountRepo AccountRepository, usageRepo UsageLogReposi
 // SetNvidiaAdaptiveThrottleCache 设置 NVIDIA 自适应节流缓存（可选依赖）。
 func (s *RateLimitService) SetNvidiaAdaptiveThrottleCache(cache NvidiaAdaptiveThrottleCache) {
 	s.nvidiaAdaptiveThrottleCache = cache
+}
+
+// SetNvidiaThrottleL1 注入 NVIDIA 节流 L1 进程内缓存（可选依赖）。
+// nil 时跳过 L1 短路, 降级到 L2 Redis 路径, 与过往行为一致。
+func (s *RateLimitService) SetNvidiaThrottleL1(l1 *nvidiaThrottleL1) {
+	s.nvidiaThrottleL1 = l1
 }
 
 // SetTimeoutCounterCache 设置超时计数器缓存（可选依赖）

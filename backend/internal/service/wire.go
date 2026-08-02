@@ -447,6 +447,9 @@ func ProvideRateLimitService(
 	svc.SetSettingService(settingService)
 	svc.SetTokenCacheInvalidator(tokenCacheInvalidator)
 	svc.SetNvidiaAdaptiveThrottleCache(nvidiaThrottleCache)
+	// N3: 注入 NVIDIA 节流 L1 进程内缓存, 命中省一次 Redis RTT.
+	// nil-safe: 内部判 nil 后降级到纯 L2 路径, 与过往行为一致.
+	svc.SetNvidiaThrottleL1(newNvidiaThrottleL1())
 	return svc
 }
 

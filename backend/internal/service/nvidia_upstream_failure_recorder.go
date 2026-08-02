@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"net/http"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -11,11 +12,13 @@ import (
 // F10: NVIDIA 上游失败 reason 常量。所有 recordNVIDIAUpstreamFailure 调用
 // 必须从此处取值，确保日志/告警字段可 grep 不漂移。
 const (
-	nvidiaReasonThrottleHandled  = "nvidia_throttle_handled"
-	nvidiaReasonUnauthorized      = "nvidia_unauthorized"
-	nvidiaReasonResourceExhausted = "nvidia_resource_exhausted"
-	nvidiaReason5xxUpstream       = "nvidia_5xx_upstream"
-	nvidiaReasonRetrySendError    = "nvidia_retry_send_error"
+	nvidiaReasonThrottleHandled     = "nvidia_throttle_handled"
+	nvidiaReasonUnauthorized        = "nvidia_unauthorized"
+	nvidiaReasonResourceExhausted   = "nvidia_resource_exhausted"
+	nvidiaReason5xxUpstream         = "nvidia_5xx_upstream"
+	nvidiaReason5xxNIMInternal      = "nvidia_5xx_nim_internal"      // 500: NIM 自身故障
+	nvidiaReason5xxGatewayTransient = "nvidia_5xx_gateway_transient" // 502/503/504: 网关层临时
+	nvidiaReasonRetrySendError      = "nvidia_retry_send_error"
 )
 
 // recordNVIDIAUpstreamFailure 是 NVIDIA 上游错误的统一记录入口，集中处理：
@@ -51,18 +54,20 @@ func recordNVIDIAUpstreamFailure(s *OpenAIGatewayService, ctx context.Context, a
 	}
 }
 
-// nvidiaSingle5xxHeatPenaltyCount 是单次 NVIDIA 5xx 注入的虚拟失败计数。
-//
-// 仅做热度降权, 不 BlockAccountScheduling — 真正的连续 5xx 冷却仍由
-// maybeCoolNVIDIAOnConsecutive5xx 在累计达到 threshold 时触发。
-// 成功 reuse 后 consecutiveReuseSuccess 衰减阈值已自动清零, 不产生永久压顶。
-const nvidiaSingle5xxHeatPenaltyCount = 5
+// 5xx 子类区分对待的虚拟失败计数（N4）。
+//   - 500 NIM 自身故障 → 加重惩罚，迅速排除账号
+//   - 502/503/504 网关层临时 → 维持原值，允许快速恢复
+//   - 0/未知 5xx → 维持原值（向后兼容）
+const (
+	nvidiaSingle5xxTransientHeatPenaltyCount = 5
+	nvidiaSingle5xx500HeatPenaltyCount       = 10
+)
 
-// recordNVIDIASingle5xxHeatPenalty 在单次 NVIDIA 5xx 错误时立即注入虚拟失败计数。
-// nvidiaReuseHeatFor: heat = ReusedTotal - 3*RecentFailCount
-// 注入 5 个虚拟失败计数后热度立即为负, sortNvidiaThrottleSchedulingOrder
-// 把该账号排到末位, 让下次 failover 走到健康账号。仅影响热度排序, 不触发账号封锁。
-func recordNVIDIASingle5xxHeatPenalty(s *OpenAIGatewayService, account *Account) {
+// recordNVIDIASingle5xxHeatPenalty 按 N4 决策注入虚拟失败计数：
+// heat = ReusedTotal - 3*RecentFailCount，heat 为负时账号排末位。
+// 仅影响排序，不 BlockAccountScheduling（连续 5xx 冷却交给 maybeCoolNVIDIAOnConsecutive5xx）。
+// stream interrupt 路径（无 HTTP code）传 StatusBadGateway，按"网关层临时"处理。
+func recordNVIDIASingle5xxHeatPenalty(s *OpenAIGatewayService, account *Account, statusCode int) {
 	if account == nil || s == nil {
 		return
 	}
@@ -70,12 +75,25 @@ func recordNVIDIASingle5xxHeatPenalty(s *OpenAIGatewayService, account *Account)
 	if metrics == nil {
 		return
 	}
+
+	penaltyCount := nvidiaSingle5xxTransientHeatPenaltyCount
+	reason := nvidiaReason5xxUpstream
+	switch statusCode {
+	case http.StatusInternalServerError:
+		penaltyCount = nvidiaSingle5xx500HeatPenaltyCount
+		reason = nvidiaReason5xxNIMInternal
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		reason = nvidiaReason5xxGatewayTransient
+	}
+
 	now := time.Now()
-	for i := 0; i < nvidiaSingle5xxHeatPenaltyCount; i++ {
+	for i := 0; i < penaltyCount; i++ {
 		metrics.RecordAccountFail(account.ID, now)
 	}
 	logger.L().Debug("nvidia single 5xx heat penalty applied",
 		zap.Int64("account_id", account.ID),
-		zap.Int("penalty_count", nvidiaSingle5xxHeatPenaltyCount),
+		zap.Int("status_code", statusCode),
+		zap.Int("penalty_count", penaltyCount),
+		zap.String("reason", reason),
 	)
 }
