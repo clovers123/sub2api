@@ -134,6 +134,20 @@ func (s *OpsService) SetNVIDIAMetricsSources(rateLimit *RateLimitService, poolMe
 	s.nvidiaPrewarmerSource.Store(prewarmer)
 }
 
+// SnapshotNVIDIAAdaptiveThrottle 返回 NVIDIA 自适应节流的进程内实时计数
+// （Reserves / Allowed / Blocked / Outcomes / CacheErrors）。
+// D: ops 面板实时命中率可视化；数据源未注入时返回零值。
+func (s *OpsService) SnapshotNVIDIAAdaptiveThrottle() NVIDIAAdaptiveThrottleMetricsSnapshot {
+	if s == nil {
+		return NVIDIAAdaptiveThrottleMetricsSnapshot{}
+	}
+	rl := s.nvidiaThrottleSource.Load()
+	if rl == nil {
+		return NVIDIAAdaptiveThrottleMetricsSnapshot{}
+	}
+	return rl.SnapshotNVIDIAAdaptiveThrottleMetrics()
+}
+
 func NewOpsService(
 	opsRepo OpsRepository,
 	settingRepo SettingRepository,

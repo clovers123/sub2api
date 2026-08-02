@@ -379,6 +379,8 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	var firstTokenMs *int
 	clientDisconnected := false
 	clientOutputStarted := false
+	streamInterrupted := false
+	sawDone := false
 	pendingLines := make([]string, 0, 8)
 	refusalDetector := newOpenAIChatSilentRefusalDetector(requestBodyLen)
 
@@ -419,6 +421,9 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		refusalDetector.ObserveSSELine(line)
 		if payload, ok := extractOpenAISSEDataLine(line); ok {
 			trimmedPayload := strings.TrimSpace(payload)
+			if trimmedPayload == "[DONE]" {
+				sawDone = true
+			}
 			if trimmedPayload != "[DONE]" {
 				observer.ObserveOpenAI([]byte(payload), strings.TrimSpace(gjson.Get(payload, "type").String()))
 				usageOnlyChunk := isOpenAIChatUsageOnlyStreamChunk(payload)
@@ -446,18 +451,40 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+	// 中断判定：上游 SSE 流未以 [DONE] 正常结束。
+	//   - scanner.Err() 非 nil（读错误，非客户端取消/超时）
+	//   - 或 EOF 结束但从未见过 [DONE]（流被截断）
+	scanErr := scanner.Err()
+	isInterrupted := func() bool {
+		if errors.Is(scanErr, context.Canceled) || errors.Is(scanErr, context.DeadlineExceeded) {
+			return false
+		}
+		if scanErr != nil {
+			return true
+		}
+		return !sawDone
+	}()
+
+	if isInterrupted {
+		streamInterrupted = true
+		if scanErr != nil {
 			logger.L().Warn("openai chat_completions raw: stream read error",
-				zap.Error(err),
+				zap.Error(scanErr),
 				zap.String("request_id", requestID),
 			)
+		}
+		// B: 上游 SSE 流被中途截断（非正常 [DONE] 结束）→ 对 NVIDIA 账号
+		// 记录上游失败信号（heat penalty + 5xx 计数），让调度器避开该账号；
+		// 同时标记 StreamInterrupted 阻止 success 路径把流中断记成 200 success。
+		if isNVIDIAAccountByHostname(account) && !clientDisconnected {
+			recordNVIDIAUpstreamFailure(s, c.Request.Context(), account, http.StatusBadGateway, nil, nvidiaReason5xxUpstream)
+			recordNVIDIASingle5xxHeatPenalty(s, account, http.StatusBadGateway)
 		}
 		// P2: 已输出过字节且流被上游截断 → 向客户端追加可重试错误事件。
 		// 协议与 Anthropic SSE 标准一致；错误码沿用 stream_read_error.go 已有常量。
 		const streamInterruptedType = "upstream_stream_read_error"
 		const streamInterruptedMessage = "Upstream response stream was interrupted"
-		if clientOutputStarted && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		if clientOutputStarted && !clientDisconnected {
 			streamErrorLine := fmt.Sprintf(
 				`{"type":"error","error":{"type":%q,"message":%q}}`,
 				streamInterruptedType, streamInterruptedMessage,
@@ -506,6 +533,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		ReasoningEffort:               reasoningEffort,
 		ServiceTier:                   resolvedOpenAIUpstreamServiceTier(c, serviceTier),
 		Stream:                        true,
+		StreamInterrupted:             streamInterrupted,
 		Duration:                      time.Since(startTime),
 		FirstTokenMs:                  firstTokenMs,
 	}, nil

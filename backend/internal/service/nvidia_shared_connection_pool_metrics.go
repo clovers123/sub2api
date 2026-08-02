@@ -41,6 +41,10 @@ type NVIDIASharedConnectionPoolMetrics struct {
 // 在累计数超过 threshold 且首末失败间隔仍在 window 内时返回 true——上游调用方
 // 接住信号触发 BlockAccountScheduling。一次成功 RecordAccountReuse 会清零
 // consecutive5xxCount + first5xxAtNano，让账号恢复后立即重新轮换。
+//
+// C: RPM 基线画像 —— baselineWindowRequests / baselineWindowStartedAtNano 记录
+// 1 分钟滑动窗口内的成功请求计数，作为账号当前吞吐基线的近似（≈当前 RPM）。
+// 调度排序在同 heat 桶内优先选择基线高的账号（容量大的账号优先）。
 type nvidiaAccountReuseState struct {
 	reusedTotal              atomic.Int64
 	lastReuseAtNano          atomic.Int64
@@ -53,7 +57,13 @@ type nvidiaAccountReuseState struct {
 	// P1: 连续 5xx 计数与窗口起点（unix-nano），用于触发短期 BlockAccountScheduling 冷却。
 	consecutive5xxCount      atomic.Int64
 	first5xxAtNano           atomic.Int64
+	// C: RPM 基线 —— 1 分钟滑动窗口内的成功请求计数 + 窗口起点。
+	baselineWindowRequests   atomic.Int64
+	baselineWindowStartedAtNano atomic.Int64
 }
+
+// nvidiaBaselineWindowSeconds 是 RPM 基线滑窗长度（秒）。
+const nvidiaBaselineWindowSeconds = 60
 
 // nvidiaReuseSuccessDecayThreshold 是连续成功 reuse 次数阈值，达到后清除
 // recentFailCount，避免账号一次事故被永久压在 sort 末尾的"黑洞"问题 (F4)。
@@ -185,6 +195,27 @@ func (m *NVIDIASharedConnectionPoolMetrics) RecordAccountReuse(accountID int64, 
 			break
 		}
 	}
+
+	// C: reuse 成功即一次成功请求，计入 RPM 基线窗口。
+	m.recordBaselineSuccessLocked(state, ts)
+}
+
+// recordBaselineSuccessLocked 把一次成功请求计入 RPM 基线滑动窗口。
+// 调用方必须已持有 accountReuseBy map 的读取锁（复用 RecordAccountReuse 的
+// state 查找结果），窗口逻辑本身用原子计数无锁。
+func (m *NVIDIASharedConnectionPoolMetrics) recordBaselineSuccessLocked(state *nvidiaAccountReuseState, nowNano int64) {
+	if state == nil {
+		return
+	}
+	started := state.baselineWindowStartedAtNano.Load()
+	windowNano := int64(nvidiaBaselineWindowSeconds) * int64(time.Second)
+	if started == 0 || nowNano-started >= windowNano {
+		// 窗口过期：重置起点并清零计数（本次成功代表新窗口的第一个请求）。
+		state.baselineWindowStartedAtNano.CompareAndSwap(started, nowNano)
+		state.baselineWindowRequests.Store(1)
+		return
+	}
+	state.baselineWindowRequests.Add(1)
 }
 
 // RecordAccountFail increments the per-account recent failure counter and stamps
@@ -213,6 +244,56 @@ func (m *NVIDIASharedConnectionPoolMetrics) RecordAccountFail(accountID int64, a
 	state.consecutiveReuseSuccess.Store(0)
 	// F4: 失败打断连续成功链，让衰减阈值重新计算，避免短暂偶发成功就清零大量失败计数
 	casLastFailAtNano(state, at.UnixNano())
+}
+
+// RecordAccountSuccess records a successful upstream call in the RPM baseline
+// sliding window for accountID. The window is reset when it expires, so the
+// count approximates the account's current sustained RPM (throughput baseline).
+//
+// C: 调度排序在同 heat 桶内用 SnapshotAccountBaseline 优先选基线高的账号，
+// 让容量大的 NVIDIA 账号承担更多流量。
+func (m *NVIDIASharedConnectionPoolMetrics) RecordAccountSuccess(accountID int64, at time.Time) {
+	if m == nil || accountID <= 0 {
+		return
+	}
+	m.accountReuseMu.Lock()
+	if m.accountReuseBy == nil {
+		m.accountReuseBy = make(map[int64]*nvidiaAccountReuseState)
+	}
+	state, ok := m.accountReuseBy[accountID]
+	if !ok {
+		state = &nvidiaAccountReuseState{}
+		m.accountReuseBy[accountID] = state
+	}
+	m.accountReuseMu.Unlock()
+
+	m.recordBaselineSuccessLocked(state, at.UnixNano())
+}
+
+// SnapshotAccountBaseline returns the account's current RPM baseline
+// (successful requests in the last nvidiaBaselineWindowSeconds window).
+// Returns 0 if the account was never recorded or the window has expired.
+//
+// C: 只读热路径（调度排序），无锁读原子计数。
+func (m *NVIDIASharedConnectionPoolMetrics) SnapshotAccountBaseline(accountID int64) int64 {
+	if m == nil || accountID <= 0 {
+		return 0
+	}
+	m.accountReuseMu.Lock()
+	state, ok := m.accountReuseBy[accountID]
+	m.accountReuseMu.Unlock()
+	if !ok || state == nil {
+		return 0
+	}
+	started := state.baselineWindowStartedAtNano.Load()
+	if started == 0 {
+		return 0
+	}
+	windowNano := int64(nvidiaBaselineWindowSeconds) * int64(time.Second)
+	if time.Now().UnixNano()-started >= windowNano {
+		return 0
+	}
+	return state.baselineWindowRequests.Load()
 }
 
 // RecordConsecutive5xx records a single NVIDIA 5xx failure as part of a

@@ -108,6 +108,23 @@ func sortNvidiaThrottleSchedulingOrder(candidates []*Account, metrics *NVIDIASha
 			}
 			bucketStart = bucketEnd
 		}
+
+		// C: 同 heat 桶内按 RPM 基线降序（容量大的账号优先）。
+		// 仅对 reuse-heat 相同的账号生效，不影响既有 heat 语义。
+		bucketStart = 0
+		for bucketStart < len(live) {
+			bucketEnd := bucketStart + 1
+			for bucketEnd < len(live) && sameNvidiaHeatBucket(live[bucketStart], live[bucketEnd], metrics) {
+				bucketEnd++
+			}
+			if bucketEnd-bucketStart > 1 {
+				sort.SliceStable(live[bucketStart:bucketEnd], func(i, j int) bool {
+					a, b := live[bucketStart+i], live[bucketStart+j]
+					return nvidiaBaselineRPMFor(a, metrics) > nvidiaBaselineRPMFor(b, metrics)
+				})
+			}
+			bucketStart = bucketEnd
+		}
 	}
 
 	// Shuffle inside (priority + LastUsedAt second + reuse heat) buckets to
@@ -159,8 +176,28 @@ func sameNvidiaPriorityAndLastUsedAtSecond(a, b *Account) bool {
 }
 
 // sameNvidiaSortBucket extends sameNvidiaPriorityAndLastUsedAtSecond with
-// reuse-heat equality, used to bound final shuffle buckets.
+// reuse-heat + baseline equality, used to bound final shuffle buckets.
+// 必须包含 baseline 维度：否则 C 优化的 baseline 排序结果会被随后的
+// rand.Shuffle 洗掉，让同等 heat 但 baseline 不同的账号失去 C 优化意图。
 func sameNvidiaSortBucket(a, b *Account, metrics *NVIDIASharedConnectionPoolMetrics) bool {
+	if !sameNvidiaPriorityAndLastUsedAtSecond(a, b) {
+		return false
+	}
+	if metrics == nil {
+		return true
+	}
+	if nvidiaReuseHeatFor(a, metrics) != nvidiaReuseHeatFor(b, metrics) {
+		return false
+	}
+	return nvidiaBaselineRPMFor(a, metrics) == nvidiaBaselineRPMFor(b, metrics)
+}
+
+// sameNvidiaHeatBucket reports whether two accounts have identical
+// reuse-heat (within the same priority + LastUsedAt bucket). C: 用于
+// RPM 基线排序的桶边界——只有 priority + LastUsedAt + heat 都相同的账号才按基线比较。
+// 必须前置 sameNvidiaPriorityAndLastUsedAtSecond: 否则 heat=0 的账号会跨不同
+// priority 桶做 baseline sort, 打乱 priority 优先级的语义。
+func sameNvidiaHeatBucket(a, b *Account, metrics *NVIDIASharedConnectionPoolMetrics) bool {
 	if !sameNvidiaPriorityAndLastUsedAtSecond(a, b) {
 		return false
 	}
@@ -183,4 +220,14 @@ func nvidiaReuseHeatFor(a *Account, metrics *NVIDIASharedConnectionPoolMetrics) 
 	}
 	snap := metrics.SnapshotAccountReuse(a.ID)
 	return snap.ReusedTotal - snap.RecentFailCount*3
+}
+
+// nvidiaBaselineRPMFor returns the account's current RPM baseline (successful
+// requests in the last minute). C: 调度在同 heat 桶内优先选基线高的账号，
+// 让容量大的 NVIDIA 账号承担更多流量。
+func nvidiaBaselineRPMFor(a *Account, metrics *NVIDIASharedConnectionPoolMetrics) int64 {
+	if a == nil || metrics == nil {
+		return 0
+	}
+	return metrics.SnapshotAccountBaseline(a.ID)
 }

@@ -871,6 +871,20 @@ func rawChatCompletionsTestAccount() *Account {
 	}
 }
 
+func rawChatCompletionsNVIDIATestAccount() *Account {
+	return &Account{
+		ID:          102,
+		Name:        "raw-nvidia-apikey",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "nvapi-test-1234567890",
+			"base_url": "https://integrate.api.nvidia.com",
+		},
+	}
+}
+
 func largeRawChatCompletionsBody() []byte {
 	return []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"` +
 		strings.Repeat("x", openAISilentRefusalMinRequestBodyBytes) +

@@ -69,6 +69,17 @@ func (s *RateLimitService) ReserveNVIDIAAdaptiveThrottle(ctx context.Context, re
 		return NvidiaReserveResult{}, false
 	}
 	s.ensureNVIDIAAdaptiveThrottleRuntime()
+	// N3: L1 命中直接拒绝, 省一次 Redis RTT. L1 不可用时降级 L2.
+	if s.nvidiaThrottleL1 != nil && s.nvidiaThrottleL1.IsBlocked(request.Scope.AccountID, request.Scope.CanonicalModel) {
+		s.nvidiaMetrics.Reserves.Add(1)
+		s.nvidiaMetrics.Blocked.Add(1)
+		retryAfter := nvidiaThrottleL1TTL
+		return NvidiaReserveResult{
+			Allowed:      false,
+			RetryAfterMs: retryAfter.Milliseconds(),
+			Err:          &NVIDIAAdaptiveThrottleBlockedError{RetryAfter: retryAfter},
+		}, true
+	}
 	s.nvidiaMetrics.Reserves.Add(1)
 	result, err := s.nvidiaAdaptiveThrottleCache.Reserve(ctx, request.Scope.AccountID, request.Scope.CanonicalModel)
 	if err != nil {
@@ -80,6 +91,10 @@ func (s *RateLimitService) ReserveNVIDIAAdaptiveThrottle(ctx context.Context, re
 		return NvidiaReserveResult{Allowed: true}, true
 	}
 	s.nvidiaMetrics.Blocked.Add(1)
+	// L2 判定 blocked: 回填 L1, 下次同账号同 model 直接命中 L1.
+	if s.nvidiaThrottleL1 != nil {
+		s.nvidiaThrottleL1.MarkBlocked(request.Scope.AccountID, request.Scope.CanonicalModel)
+	}
 	retryAfter := time.Duration(result.RetryAfterMs) * time.Millisecond
 	return NvidiaReserveResult{
 		Allowed:      false,
@@ -103,6 +118,10 @@ func (s *RateLimitService) RecordNVIDIAAdaptiveThrottleOutcome(ctx context.Conte
 		s.ensureNVIDIAAdaptiveThrottleRuntime()
 		s.nvidiaMetrics.CacheErrors.Add(1)
 		return false
+	}
+	// N3: Rate / Capacity 信号 → 同步写 L1, 后续 8s 内同 scope 直接 block 不查 L2.
+	if s.nvidiaThrottleL1 != nil && (signal == nvidiaThrottleSignalRate || signal == nvidiaThrottleSignalCapacity) {
+		s.nvidiaThrottleL1.MarkBlocked(update.Scope.AccountID, update.Scope.CanonicalModel)
 	}
 	s.ensureNVIDIAAdaptiveThrottleRuntime()
 	s.nvidiaMetrics.Outcomes.Add(1)
