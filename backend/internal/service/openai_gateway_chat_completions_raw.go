@@ -1,7 +1,9 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -411,6 +413,15 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 				sawDone = true
 			}
 			if trimmedPayload != "[DONE]" {
+				// N6: NVIDIA SSE 中段 error event 检测 — 流量中段 data: {"error":...}
+				// 触发节流记录, 用 client 显式 error event 替换原样转发 error 文本
+				if isNVIDIASSEErrorEvent([]byte(payload)) {
+					recordNVIDIAUpstreamFailure(s, c.Request.Context(), account, http.StatusBadGateway, []byte(payload), nvidiaReason5xxUpstream)
+					recordNVIDIASingle5xxHeatPenalty(s, account, http.StatusBadGateway)
+					writeSSEErrorEvent(c, "upstream_midstream_error", "NVIDIA stream returned mid-stream error")
+					return &OpenAIForwardResult{StreamInterrupted: true}, nil
+				}
+
 				observer.ObserveOpenAI([]byte(payload), strings.TrimSpace(gjson.Get(payload, "type").String()))
 				usageOnlyChunk := isOpenAIChatUsageOnlyStreamChunk(payload)
 				if u := extractCCStreamUsage(payload); u != nil {
@@ -662,5 +673,48 @@ func stripChatPromptCacheKeyForNVIDIA(body []byte, account *Account) ([]byte, er
 	if !gjson.GetBytes(body, "prompt_cache_key").Exists() {
 		return body, nil
 	}
+	if !isNVIDIAAccountByHostname(account) {
+		return body, nil
+	}
+	if !gjson.GetBytes(body, "prompt_cache_key").Exists() {
+		return body, nil
+	}
 	return sjson.DeleteBytes(body, "prompt_cache_key")
+}
+
+// isNVIDIASSEErrorEvent returns true when a SSE data payload contains an
+// "error" field whose value is a JSON object (non-null). This catches NVIDIA's
+// mid-stream error events while avoiding false positives on:
+//   - "error": null, "error": "..."  (nil or non-object value)
+//   - non-error fields like "a":"error"
+func isNVIDIASSEErrorEvent(data []byte) bool {
+	if !bytes.Contains(data, []byte(`"error"`)) {
+		return false
+	}
+	var probe struct {
+		Error *json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return false
+	}
+	if probe.Error == nil {
+		return false
+	}
+	return strings.HasPrefix(string(*probe.Error), "{")
+}
+
+// writeSSEErrorEvent sends a standardized error event to the client over SSE.
+// Always terminates with [DONE] so the streaming client knows the stream ended.
+func writeSSEErrorEvent(c *gin.Context, errorType, message string) {
+	payload, _ := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"type":    errorType,
+			"message": message,
+		},
+	})
+	c.Writer.Write([]byte("data: "))
+	c.Writer.Write(payload)
+	c.Writer.Write([]byte("\n\n"))
+	c.Writer.Write([]byte("data: [DONE]\n\n"))
+	c.Writer.Flush()
 }
