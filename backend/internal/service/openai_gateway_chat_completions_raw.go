@@ -692,12 +692,6 @@ func stripChatPromptCacheKeyForNVIDIA(body []byte, account *Account) ([]byte, er
 	if !gjson.GetBytes(body, "prompt_cache_key").Exists() {
 		return body, nil
 	}
-	if !isNVIDIAAccountByHostname(account) {
-		return body, nil
-	}
-	if !gjson.GetBytes(body, "prompt_cache_key").Exists() {
-		return body, nil
-	}
 	return sjson.DeleteBytes(body, "prompt_cache_key")
 }
 
