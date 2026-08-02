@@ -55,3 +55,72 @@ func TestStreamRawChatCompletions_InterruptedNVIDIARecordsFailure(t *testing.T) 
 	require.NotNil(t, result)
 	require.True(t, result.StreamInterrupted, "mid-stream interruption must mark StreamInterrupted=true")
 }
+
+func TestIsNVIDIASSEErrorEvent_Detection(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+		want    bool
+	}{
+		{"error_object", `{"id":"1","error":{"type":"server_error","message":"boom"}}`, true},
+		{"error_null", `{"id":"1","error":null}`, false},
+		{"error_string", `{"id":"1","error":"something"}`, false},
+		{"no_error_field", `{"id":"1","choices":[{"delta":{"content":"hi"}}]}`, false},
+		{"a_is_error_not_key", `{"id":"1","a":"error"}`, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isNVIDIASSEErrorEvent([]byte(tc.payload))
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestNVIDIASSEErrorEvent_StreamScanner(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// SSE stream with mid-stream error event.
+	const streamBody = `data: {"id":"1","choices":[{"delta":{"content":"hi"}}]}
+data: {"id":"2","error":{"type":"internal_error","message":"boom"}}
+`
+
+	body := []byte(`{"model":"deepseek-ai/deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	pr, pw := io.Pipe()
+	go func() {
+		_, _ = pw.Write([]byte(streamBody))
+		_ = pw.Close()
+	}()
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_n6_stream"}},
+		Body:       pr,
+	}}
+
+	svc := &OpenAIGatewayService{
+		cfg:          rawChatCompletionsTestConfig(),
+		httpUpstream: upstream,
+	}
+	metrics := NewNVIDIASharedConnectionPoolMetrics()
+	svc.SetNVIDIASharedPoolMetricsForSorting(metrics)
+	account := rawChatCompletionsNVIDIATestAccount()
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, result.StreamInterrupted, "mid-stream error event must mark StreamInterrupted=true")
+
+	// Verify we wrote the error event to the client, not the raw error text.
+	output := rec.Body.String()
+	require.Contains(t, output, "data: [DONE]", "must terminate with DONE")
+	require.Contains(t, output, `"type":"upstream_midstream_error"`, "standard error type written to client")
+
+	// Heat penalty should have been recorded.
+	require.Greater(t, metrics.SnapshotAccountReuse(account.ID).RecentFailCount, int64(0))
+}
