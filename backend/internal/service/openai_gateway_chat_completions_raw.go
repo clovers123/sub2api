@@ -472,8 +472,8 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		// 记录上游失败信号（heat penalty + 5xx 计数），让调度器避开该账号；
 		// 同时标记 StreamInterrupted 阻止 success 路径把流中断记成 200 success。
 		if isNVIDIAAccountByHostname(account) && !clientDisconnected {
-			recordNVIDIAUpstreamFailure(s, c.Request.Context(), account, http.StatusBadGateway, nil, nvidiaReason5xxUpstream)
-			recordNVIDIASingle5xxHeatPenalty(s, account, http.StatusBadGateway)
+			recordNVIDIAUpstreamFailure(s, c.Request.Context(), account, 0, nil, nvidiaReasonStreamInterrupt)
+			recordNVIDIASingle5xxHeatPenalty(s, account, 0)
 		}
 		// P2: 已输出过字节且流被上游截断 → 向客户端追加可重试错误事件。
 		// 协议与 Anthropic SSE 标准一致；错误码沿用 stream_read_error.go 已有常量。

@@ -201,8 +201,8 @@ func (m *NVIDIASharedConnectionPoolMetrics) RecordAccountReuse(accountID int64, 
 }
 
 // recordBaselineSuccessLocked 把一次成功请求计入 RPM 基线滑动窗口。
-// 调用方必须已持有 accountReuseBy map 的读取锁（复用 RecordAccountReuse 的
-// state 查找结果），窗口逻辑本身用原子计数无锁。
+// state 由调用方通过 accountReuseBy map 查找获得，指针在窗口期间稳定；
+// 窗口逻辑本身用 atomic 操作保证并发安全，调用方无需持锁。
 func (m *NVIDIASharedConnectionPoolMetrics) recordBaselineSuccessLocked(state *nvidiaAccountReuseState, nowNano int64) {
 	if state == nil {
 		return

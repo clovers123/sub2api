@@ -837,6 +837,10 @@ func (s *httpUpstreamService) nvidiaStaleSocketProbe(baseURL string, entry *upst
 	if entry == nil || entry.client == nil {
 		return
 	}
+	// 同 client 已有请求在途时跳过, 避免 CloseIdleConnections 影响并发连接。
+	if atomic.LoadInt64(&entry.inFlight) > 0 {
+		return
+	}
 
 	target, err := url.Parse(strings.TrimRight(baseURL, "/") + nvidiaStaleProbeEndpoint)
 	if err != nil {
