@@ -35,7 +35,8 @@ func newNvidiaThrottleL1() *nvidiaThrottleL1 {
 }
 
 func keyNvidiaThrottleL1(accountID int64, canonicalModel string) string {
-	return canonicalModel + "@" + strconv.FormatInt(accountID, 10)
+	// \x00 作为分隔符，保证 canonicalModel 注入"@" 不会产生 wrong key 碰撞
+	return canonicalModel + "\x00" + strconv.FormatInt(accountID, 10)
 }
 
 // IsBlocked 命中返回 true, 即调度器应直接返回 block, 不查 L2 也不查上游.

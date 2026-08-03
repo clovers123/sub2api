@@ -18,6 +18,7 @@ const (
 	nvidiaReason5xxUpstream         = "nvidia_5xx_upstream"
 	nvidiaReason5xxNIMInternal      = "nvidia_5xx_nim_internal"      // 500: NIM 自身故障
 	nvidiaReason5xxGatewayTransient = "nvidia_5xx_gateway_transient" // 502/503/504: 网关层临时
+	nvidiaReasonStreamInterrupt     = "nvidia_stream_interrupt"      // SSE 流中断（非 HTTP status）
 	nvidiaReasonRetrySendError      = "nvidia_retry_send_error"
 )
 
