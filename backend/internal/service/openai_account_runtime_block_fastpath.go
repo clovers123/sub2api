@@ -160,7 +160,9 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	// NVIDIA 自适应节流：在进入旧有的 isNVIDIAResourceExhaustedError 全账户分支之前，
 	// 将上游结果记录到自适应节流缓存中。命中被处理的信号（429 / 503 capacity）时，
 	// 立即判定 shouldDisable=true 并提前返回，不再执行下方的全账户封锁策略。
-	if s.rateLimitService != nil {
+	// B1''：带 hostname guard——非 NVIDIA 账号不得写入 NVIDIA throttle cache，
+	// 也不得被 handled 提前短路 generic 429 处理（provider isolation）。
+	if s.rateLimitService != nil && isNVIDIAAccountByHostname(account) {
 		update := NvidiaThrottleUpdate{
 			Scope: NVIDIAThrottleScope{
 				AccountID:      account.ID,
@@ -183,7 +185,9 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 
 	// NVIDIA 免费 API key 失效（401）：送 24h 长 cooldown 防止反复轮询失效账号。
 	// 需在 isNVIDIAResourceExhaustedError 之前，因为 unauthorized 不可逆且不应等 2min 重试。
-	if account.Type == AccountTypeAPIKey && isNVIDIAUnauthorizedError(statusCode, responseBody) {
+	// B1''：带 hostname guard——非 NVIDIA 上游的 401 unauthorized 不得误入 24h 冷却（provider isolation）。
+	if account.Type == AccountTypeAPIKey && isNVIDIAAccountByHostname(account) &&
+		isNVIDIAUnauthorizedError(statusCode, responseBody) {
 		recordNVIDIAUpstreamFailure(s, ctx, account, statusCode, responseBody, nvidiaReasonUnauthorized)
 		s.BlockAccountScheduling(account, time.Now().Add(nvidiaUnauthorizedCooldown), "nvidia_unauthorized")
 		return true

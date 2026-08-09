@@ -373,7 +373,10 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	// next Reserve window can widen again.
 	// B: StreamInterrupted 的流不算成功——中断已在 streamRawChatCompletions
 	// 内记过失败信号，这里必须跳过 200 success 否则 AIMD spacing 错误减半。
-	if handleErr == nil && result != nil && !result.StreamInterrupted && s.rateLimitService != nil {
+	// B1''：带 hostname guard——非 NVIDIA 账号（含 OAuth）的成功结果不得写入
+	// NVIDIA throttle cache（provider isolation）。
+	if handleErr == nil && result != nil && !result.StreamInterrupted && s.rateLimitService != nil &&
+		isNVIDIAAccountByHostname(account) {
 		update := NvidiaThrottleUpdate{
 			Scope: NVIDIAThrottleScope{
 				AccountID:      account.ID,

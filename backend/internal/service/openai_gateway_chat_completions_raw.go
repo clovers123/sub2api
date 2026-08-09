@@ -447,7 +447,8 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 				outputBytes += extractCCStreamOutputBytes(payload)
 				// N6: NVIDIA SSE 中段 error event 检测 — 流量中段 data: {"error":...}
 				// 触发节流记录, 用 client 显式 error event 替换原样转发 error 文本
-				if isNVIDIASSEErrorEvent([]byte(payload)) {
+				// B1''：带 hostname guard——非 NVIDIA 账号流中的 error object 原样转发，不中断。
+				if isNVIDIAAccountByHostname(account) && isNVIDIASSEErrorEvent([]byte(payload)) {
 					recordNVIDIAUpstreamFailure(s, c.Request.Context(), account, http.StatusBadGateway, []byte(payload), nvidiaReason5xxUpstream)
 					recordNVIDIASingle5xxHeatPenalty(s, account, http.StatusBadGateway)
 					writeSSEErrorEvent(c, "upstream_midstream_error", "NVIDIA stream returned mid-stream error")

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -575,6 +576,29 @@ func (f *fakeAcceptingNvidiaCache) Apply(_ context.Context, _ int64, _ string, _
 	return nil
 }
 
+// countingNvidiaCache 记录 Apply 调用次数（含并发保护），用于断言
+// 非 NVIDIA 账号的结果/失败不会写入 NVIDIA adaptive throttle 缓存。
+type countingNvidiaCache struct {
+	mu      sync.Mutex
+	applies int
+}
+
+func (c *countingNvidiaCache) Reserve(_ context.Context, _ int64, _ string) (NvidiaCacheReserveResult, error) {
+	return NvidiaCacheReserveResult{Allowed: true}, nil
+}
+func (c *countingNvidiaCache) Apply(_ context.Context, _ int64, _ string, _ NvidiaThrottleRate) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.applies++
+	return nil
+}
+
+func (c *countingNvidiaCache) applyCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.applies
+}
+
 // TestNVIDIAQuotaFastPath_Resource429Keeps2MinCooldownWithAdaptiveEnabled 回归：
 // adaptive throttle 启用（rateLimitService 非 nil + canonicalModel 非空）时,
 // ResourceExhausted 429 仍必须进入 2min BlockAccountScheduling, 不能被
@@ -656,4 +680,58 @@ func TestNVIDIAQuotaFastPath_Resource429IgnoresNonNVIDIAAPIKey(t *testing.T) {
 	require.False(t, shouldDisable, "non-NVIDIA API key must not be pulled into nvidia resource fastpath")
 	_, ok := svc.openaiAccountRuntimeBlockUntil.Load(account.ID)
 	require.False(t, ok, "non-NVIDIA API key must not be 2min blocked by nvidia resource branch")
+}
+
+// TestNVIDIAUnauthorizedFastPath_IgnoresNonNVIDIAAPIKey B1''-1 回归：
+// 非 NVIDIA 上游（默认 base_url = api.openai.com）的 API-Key 账号返回
+// 401 + "unauthorized" body 时，不得被 NVIDIA unauthorized 分支送 24h 冷却
+// （provider isolation：unauthorized 分支必须带 isNVIDIAAccountByHostname guard）。
+func TestNVIDIAUnauthorizedFastPath_IgnoresNonNVIDIAAPIKey(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:       57,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey, // 默认 base_url = api.openai.com → 非 NVIDIA
+		Credentials: map[string]any{
+			"api_key": "sk-openai-key",
+		},
+	}
+
+	body := []byte(`{"error":{"message":"unauthorized"}}`)
+	shouldDisable := svc.handleOpenAIAccountUpstreamError(context.Background(), account, http.StatusUnauthorized, http.Header{}, body)
+
+	require.False(t, shouldDisable, "non-NVIDIA API key must not be pulled into nvidia unauthorized fastpath")
+	value, ok := svc.openaiAccountRuntimeBlockUntil.Load(account.ID)
+	require.False(t, ok, "non-NVIDIA API key must not be 24h blocked by nvidia unauthorized branch")
+	if ok {
+		blockedUntil, isTime := value.(time.Time)
+		require.True(t, isTime)
+		require.Less(t, blockedUntil.Sub(time.Now()), nvidiaUnauthorizedCooldown-time.Hour,
+			"non-NVIDIA 401 must not land in the nvidia 24h unauthorized cooldown")
+	}
+}
+
+// TestNVIDIAAdaptiveThrottleFailure_IgnoresNonNVIDIAAccount B1''-2 回归：
+// adaptive throttle 失败路径（fastpath 内 RecordNVIDIAAdaptiveThrottleOutcome）必须带
+// isNVIDIAAccountByHostname guard：非 NVIDIA 账号的 429 rate 不得写入 NVIDIA
+// throttle cache（也不得提前 handled 短路 generic 429 处理）。
+func TestNVIDIAAdaptiveThrottleFailure_IgnoresNonNVIDIAAccount(t *testing.T) {
+	cache := &countingNvidiaCache{}
+	rateLimitSvc := NewRateLimitService(&rateLimitAccountRepoStub{}, nil, &config.Config{}, nil, nil)
+	rateLimitSvc.SetNvidiaAdaptiveThrottleCache(cache)
+	svc := &OpenAIGatewayService{rateLimitService: rateLimitSvc}
+	account := &Account{
+		ID:       58,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey, // 默认 base_url = api.openai.com → 非 NVIDIA
+		Credentials: map[string]any{
+			"api_key": "sk-openai-key",
+		},
+	}
+
+	body := []byte(`{"error":{"message":"Requests per minute limit exceeded, retry in 60s"}}`)
+	// 必须传 canonicalModel：否则 nvidiaAdaptiveThrottleEnabled 因 scope 为空直接 false，测不到 RED。
+	_ = svc.handleOpenAIAccountUpstreamError(context.Background(), account, http.StatusTooManyRequests, http.Header{}, body, "gpt-5.4")
+
+	require.Equal(t, 0, cache.applyCount(), "non-NVIDIA 429 rate must not be recorded into NVIDIA adaptive throttle cache")
 }
