@@ -760,7 +760,7 @@ func TestBufferRawChatCompletions_RejectsOversizedResponse(t *testing.T) {
 	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig()}
 	svc.cfg.Gateway.UpstreamResponseReadMaxBytes = 3
 
-	result, err := svc.bufferRawChatCompletions(c, resp, rawChatCompletionsTestAccount(), "gpt-5.4", "gpt-5.4", "gpt-5.4", nil, nil, time.Now())
+	result, err := svc.bufferRawChatCompletions(c, resp, rawChatCompletionsTestAccount(), "gpt-5.4", "gpt-5.4", "gpt-5.4", nil, nil, time.Now(), 0)
 	require.ErrorIs(t, err, ErrUpstreamResponseBodyTooLarge)
 	require.Nil(t, result)
 	require.Equal(t, http.StatusBadGateway, rec.Code)
@@ -809,4 +809,97 @@ func largeRawChatCompletionsBody() []byte {
 	return []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"` +
 		strings.Repeat("x", openAISilentRefusalMinRequestBodyBytes) +
 		`"}],"stream":true}`)
+}
+
+// TestStreamRawChatCompletions_NVIDIAMissingUsageEstimated 验证 NVIDIA 流式响应
+// 缺失 usage 时（NVIDIA 不强制注入 include_usage），网关用请求/响应字节估算兜底，
+// 避免下游零计费（D 方案接入点 1）。
+func TestStreamRawChatCompletions_NVIDIAMissingUsageEstimated(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello world"}],"stream":true}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamBody := strings.Join([]string{
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{"content":"Hello"}}]}`,
+		"",
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{"content":" World"}}]}`,
+		"",
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_nvidia_nousage_stream"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+
+	svc := &OpenAIGatewayService{
+		cfg:          rawChatCompletionsTestConfig(),
+		httpUpstream: upstream,
+	}
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, rawChatCompletionsNVIDIATestAccount(), body, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Greater(t, result.Usage.InputTokens, 0, "NVIDIA streaming missing usage must get estimated input tokens")
+	require.Greater(t, result.Usage.OutputTokens, 0, "NVIDIA streaming missing usage must get estimated output tokens")
+
+	// 估算比例 = 字节数 / 4：请求体 75 字节 → 估算 input ≈ 18；响应 data payload 累计 → 按行累计 / 4。
+	require.Equal(t, len(body)/4, result.Usage.InputTokens)
+}
+
+// TestBufferRawChatCompletions_NVIDIAMissingUsageEstimated 验证 D 接入点 2：
+// NVIDIA 非流式响应提取不到 usage 时用请求/响应字节估算兜底。
+func TestBufferRawChatCompletions_NVIDIAMissingUsageEstimated(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	respBody := `{"id":"chatcmpl_buf","object":"chat.completion","model":"gpt-5.4","choices":[{"index":0,"message":{"role":"assistant","content":"Hello from upstream"},"finish_reason":"stop"}]}`
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(respBody)),
+	}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig()}
+	account := rawChatCompletionsNVIDIATestAccount()
+
+	result, err := svc.bufferRawChatCompletions(c, resp, account, "gpt-5.4", "gpt-5.4", "gpt-5.4", nil, nil, time.Now(), 60)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 60/4, result.Usage.InputTokens, "buffered NVIDIA usage fallback estimates input from request body bytes")
+	require.Equal(t, len(respBody)/4, result.Usage.OutputTokens, "buffered NVIDIA usage fallback estimates output from response body bytes")
+}
+
+// TestBufferRawChatCompletions_NonNVIDIAKeepsEmptyUsage 验证兜底仅对 NVIDIA 账号生效：
+// 普通 OpenAI API-Key 账号响应缺 usage 时仍保持零值（行为与现状一致，不伪造计费数据）。
+func TestBufferRawChatCompletions_NonNVIDIAKeepsEmptyUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	respBody := `{"id":"chatcmpl_buf","object":"chat.completion","model":"gpt-5.4","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(respBody)),
+	}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig()}
+	account := rawChatCompletionsTestAccount()
+
+	result, err := svc.bufferRawChatCompletions(c, resp, account, "gpt-5.4", "gpt-5.4", "gpt-5.4", nil, nil, time.Now(), 60)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 0, result.Usage.InputTokens, "non-NVIDIA account must not get fabricated estimated usage")
+	require.Equal(t, 0, result.Usage.OutputTokens)
 }
