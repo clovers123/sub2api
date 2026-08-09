@@ -342,7 +342,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	cnProviderBalanceCheckService := service.ProvideCNProviderBalanceCheckService(accountRepository, cnProviderBalanceService, cnProviderQuotaService, configConfig)
 	openAICodexVersionSyncService := service.ProvideOpenAICodexVersionSyncService(settingRepository, settingService, gitHubReleaseClient)
 	proxyExpiryService := service.ProvideProxyExpiryService(proxyRepository)
-	nvidiaInferencePrewarmer := service.ProvideNVIDIAInferencePrewarmer(httpUpstream, accountRepository, settingService, nvidiaSharedConnectionPoolMetrics)
+	nvidiaInferencePrewarmer := service.ProvideNVIDIAInferencePrewarmer(httpUpstream, accountRepository, settingService, nvidiaSharedConnectionPoolMetrics, openAIGatewayService)
 	subscriptionExpiryService := service.ProvideSubscriptionExpiryService(userSubscriptionRepository, settingRepository, notificationEmailService, leaderLockCache, db)
 	batchImageWorkerRuntime := service.ProvideBatchImageWorkerRuntime(batchImageRepository, accountRepository, batchImageQueue, usageBillingRepository, usageLogRepository, batchImageModelPricingResolver, apiKeyAuthCacheInvalidator, configConfig)
 	scheduledTestRunnerService := service.ProvideScheduledTestRunnerService(scheduledTestPlanRepository, scheduledTestService, accountTestService, rateLimitService, configConfig)

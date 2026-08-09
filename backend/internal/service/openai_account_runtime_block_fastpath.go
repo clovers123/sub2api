@@ -521,6 +521,35 @@ func (s *OpenAIGatewayService) isOpenAIAccountRuntimeBlocked(account *Account) b
 	return false
 }
 
+// IsNvidiaPrewarmBlocked 报告账号当前是否处于运行时封锁（ID 版，供预热器过滤）。
+// 语义与 isOpenAIAccountRuntimeBlocked 的封锁判定一致，但只按 ID 查询，
+// 不依赖 account 平台类型——调用方（NVIDIAInferencePrewarmer.collectAccounts）
+// 已经保证传入的是 NVIDIA 候选账号。
+func (s *OpenAIGatewayService) IsNvidiaPrewarmBlocked(accountID int64) bool {
+	if s == nil || accountID <= 0 {
+		return false
+	}
+	mu := s.openAIAccountRuntimeBlockLock(accountID)
+	mu.Lock()
+	defer mu.Unlock()
+	value, ok := s.openaiAccountRuntimeBlockUntil.Load(accountID)
+	if !ok {
+		return false
+	}
+	cooldownUntil, ok := value.(time.Time)
+	if !ok || cooldownUntil.IsZero() {
+		s.openaiAccountRuntimeBlockUntil.Delete(accountID)
+		s.openaiAccountRuntimeBlockGeneration.Store(accountID, s.openaiAccountRuntimeBlockSequence.Add(1))
+		return false
+	}
+	if time.Now().Before(cooldownUntil) {
+		return true
+	}
+	s.openaiAccountRuntimeBlockUntil.Delete(accountID)
+	s.openaiAccountRuntimeBlockGeneration.Store(accountID, s.openaiAccountRuntimeBlockSequence.Add(1))
+	return false
+}
+
 func (s *OpenAIGatewayService) getOpenAIAccountModelTransientState() *openAIAccountModelTransientState {
 	if s == nil {
 		return nil

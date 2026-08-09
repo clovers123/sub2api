@@ -39,6 +39,8 @@ type NVIDIAInferencePrewarmer struct {
 	model       string // 显式配置的模型；空 = 使用账号模型映射第一个目标
 	// metrics 将预热结果反馈给调度排序；nil 容忍（观测/测试可不注入）。
 	metrics *NVIDIASharedConnectionPoolMetrics
+	// blockChecker 跳过封锁中账号的预热；nil 容忍（行为与旧版一致）。
+	blockChecker nvidiaPrewarmBlockChecker
 
 	stopCh    chan struct{}
 	stopOnce  sync.Once
@@ -68,6 +70,7 @@ type NVIDIAInferencePrewarmer struct {
 //   - intervalSeconds: 保活间隔秒数；0 表示仅启动时预热一次，不开定时器
 //   - model: 预热模型；空串表示使用账号模型映射的第一个目标
 //   - metrics: 预热结果反馈给调度排序的指标器；nil 时跳过记录（观测/测试）
+//   - blockChecker: 跳过封锁中账号的预热；nil 时行为与旧版一致
 func NewNVIDIAInferencePrewarmer(
 	upstream NVIDIAInferencePrewarmUpstream,
 	accountRepo nvidiaPrewarmAccountLister,
@@ -75,15 +78,17 @@ func NewNVIDIAInferencePrewarmer(
 	intervalSeconds int,
 	model string,
 	metrics *NVIDIASharedConnectionPoolMetrics,
+	blockChecker nvidiaPrewarmBlockChecker,
 ) *NVIDIAInferencePrewarmer {
 	return &NVIDIAInferencePrewarmer{
-		upstream:    upstream,
-		accountRepo: accountRepo,
-		enabled:     enabled,
-		interval:    time.Duration(intervalSeconds) * time.Second,
-		model:       model,
-		metrics:     metrics,
-		stopCh:      make(chan struct{}),
+		upstream:     upstream,
+		accountRepo:  accountRepo,
+		enabled:      enabled,
+		interval:     time.Duration(intervalSeconds) * time.Second,
+		model:        model,
+		metrics:      metrics,
+		blockChecker: blockChecker,
+		stopCh:       make(chan struct{}),
 	}
 }
 
@@ -218,6 +223,9 @@ func (p *NVIDIAInferencePrewarmer) collectAccounts(ctx context.Context) ([]Accou
 	for i := range accounts {
 		account := &accounts[i]
 		if !isNVIDIAPrewarmCandidate(account) {
+			continue
+		}
+		if p.blockChecker != nil && p.blockChecker.IsNvidiaPrewarmBlocked(account.ID) {
 			continue
 		}
 		if strings.TrimSpace(account.GetCredential("api_key")) == "" {

@@ -58,8 +58,18 @@ func (f *fakeInferencePrewarmAccountRepo) ListByPlatform(ctx context.Context, pl
 	return f.accounts, nil
 }
 
+// fakePrewarmBlockChecker 按账号 ID 返回封锁状态。
+type fakePrewarmBlockChecker struct {
+	blocked map[int64]bool
+}
+
+func (f *fakePrewarmBlockChecker) IsNvidiaPrewarmBlocked(accountID int64) bool {
+	return f.blocked != nil && f.blocked[accountID]
+}
+
 func nvidiaInferencePrewarmTestAccount(id int64, baseURL, apiKey string, mapping map[string]any) Account {
 	return Account{
+		ID:          id,
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeAPIKey,
 		Credentials: map[string]any{"base_url": baseURL, "api_key": apiKey, "model_mapping": mapping},
@@ -86,7 +96,7 @@ func TestNVIDIAInferencePrewarmer_OneShotRoundsFiresForEachNVIDIAAccount(t *test
 	})
 	repo := &fakeInferencePrewarmAccountRepo{accounts: []Account{account}}
 
-	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "", nil)
+	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "", nil, nil)
 	p.Start()
 	defer p.Stop()
 
@@ -111,7 +121,7 @@ func TestNVIDIAInferencePrewarmer_ModelOverrideWins(t *testing.T) {
 	})
 	repo := &fakeInferencePrewarmAccountRepo{accounts: []Account{account}}
 
-	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "nvidia/override-model", nil)
+	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "nvidia/override-model", nil, nil)
 	p.Start()
 	defer p.Stop()
 
@@ -133,7 +143,7 @@ func TestNVIDIAInferencePrewarmer_SkipsNonNVIDIAAndCredentialLess(t *testing.T) 
 	noMapping := nvidiaInferencePrewarmTestAccount(4, "https://integrate.api.nvidia.com/v1", "key-4", nil)
 	repo := &fakeInferencePrewarmAccountRepo{accounts: []Account{good, nonNvidia, noKey, noMapping}}
 
-	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "", nil)
+	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "", nil, nil)
 	p.Start()
 	defer p.Stop()
 
@@ -152,7 +162,7 @@ func TestNVIDIAInferencePrewarmer_DisabledIsNoOp(t *testing.T) {
 	}}
 	repo := &fakeInferencePrewarmAccountRepo{accounts: []Account{*account}}
 
-	p := NewNVIDIAInferencePrewarmer(upstream, repo, false, 0, "", nil)
+	p := NewNVIDIAInferencePrewarmer(upstream, repo, false, 0, "", nil, nil)
 	p.Start()
 	time.Sleep(50 * time.Millisecond)
 	p.Stop()
@@ -168,7 +178,7 @@ func TestNVIDIAInferencePrewarmer_RecordsFailures(t *testing.T) {
 	}}
 	repo := &fakeInferencePrewarmAccountRepo{accounts: []Account{*account}}
 
-	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "", nil)
+	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "", nil, nil)
 	p.Start()
 	defer p.Stop()
 
@@ -187,7 +197,7 @@ func TestNVIDIAInferencePrewarmer_StartStopRoundtrip(t *testing.T) {
 		}},
 	}}
 
-	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "", nil)
+	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "", nil, nil)
 	p.Start()
 	waitForRounds(t, p, 1)
 	p.Stop()
@@ -207,7 +217,7 @@ func TestNVIDIAInferencePrewarmer_SuccessFeedsMetricsSnapshot(t *testing.T) {
 	repo := &fakeInferencePrewarmAccountRepo{accounts: []Account{*account}}
 	metrics := NewNVIDIASharedConnectionPoolMetrics()
 
-	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "", metrics)
+	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "", metrics, nil)
 	p.Start()
 	defer p.Stop()
 
@@ -227,7 +237,7 @@ func TestNVIDIAInferencePrewarmer_TransportFailureFeedsMetricsFailTotal(t *testi
 	repo := &fakeInferencePrewarmAccountRepo{accounts: []Account{*account}}
 	metrics := NewNVIDIASharedConnectionPoolMetrics()
 
-	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "", metrics)
+	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "", metrics, nil)
 	p.Start()
 	defer p.Stop()
 
@@ -236,4 +246,44 @@ func TestNVIDIAInferencePrewarmer_TransportFailureFeedsMetricsFailTotal(t *testi
 	require.Equal(t, int64(1), fail, "transport failure must write metrics fail_total")
 	require.Equal(t, int64(0), success)
 	require.Equal(t, int64(0), lastAt, "failed prewarm must not stamp lastPrewarmAt")
+}
+
+func TestNVIDIAInferencePrewarmer_SkipsRuntimeBlockedAccounts(t *testing.T) {
+	upstream := &fakeInferencePrewarmUpstream{}
+	free := nvidiaInferencePrewarmTestAccount(1, "https://integrate.api.nvidia.com/v1", "key-1", map[string]any{
+		"user-model": "nvidia/model-a",
+	})
+	blocked := nvidiaInferencePrewarmTestAccount(2, "https://integrate.api.nvidia.com/v1", "key-2", map[string]any{
+		"user-model": "nvidia/model-b",
+	})
+	repo := &fakeInferencePrewarmAccountRepo{accounts: []Account{free, blocked}}
+	checker := &fakePrewarmBlockChecker{blocked: map[int64]bool{2: true}}
+
+	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "", nil, checker)
+	p.Start()
+	defer p.Stop()
+
+	waitForRounds(t, p, 1)
+	require.Equal(t, 1, upstream.count(), "blocked account must not be prewarmed")
+	require.Equal(t, "key-1", upstream.call(0).apiKey)
+	require.Equal(t, 1, p.Snapshot().LastRoundAccounts, "blocked account excluded from round")
+}
+
+func TestNVIDIAInferencePrewarmer_NilBlockCheckerPreWarmsAll(t *testing.T) {
+	upstream := &fakeInferencePrewarmUpstream{}
+	free := nvidiaInferencePrewarmTestAccount(1, "https://integrate.api.nvidia.com/v1", "key-1", map[string]any{
+		"user-model": "nvidia/model-a",
+	})
+	blocked := nvidiaInferencePrewarmTestAccount(2, "https://integrate.api.nvidia.com/v1", "key-2", map[string]any{
+		"user-model": "nvidia/model-b",
+	})
+	repo := &fakeInferencePrewarmAccountRepo{accounts: []Account{free, blocked}}
+
+	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "", nil, nil)
+	p.Start()
+	defer p.Stop()
+
+	waitForRounds(t, p, 1)
+	require.Equal(t, 2, upstream.count(), "nil checker keeps legacy behavior: prewarm all candidates")
+	require.Equal(t, 2, p.Snapshot().LastRoundAccounts)
 }
