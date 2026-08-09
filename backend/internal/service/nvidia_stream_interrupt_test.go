@@ -124,3 +124,53 @@ data: {"id":"2","error":{"type":"internal_error","message":"boom"}}
 	// Heat penalty should have been recorded.
 	require.Greater(t, metrics.SnapshotAccountReuse(account.ID).RecentFailCount, int64(0))
 }
+
+// TestStreamRawChatCompletions_NonNVIDIASSEErrorEventNotInterrupted B1''-4 回归：
+// 非 NVIDIA 账号（base_url http://upstream.example）的流中出现 SSE error object 时，
+// 不得命中 NVIDIA 专用 isNVIDIASSEErrorEvent 分支：不中断、错误文本原样转发、
+// 不写 upstream_midstream_error、不记录 NVIDIA 失败（provider isolation）。
+func TestStreamRawChatCompletions_NonNVIDIASSEErrorEventNotInterrupted(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	const streamBody = `data: {"id":"1","choices":[{"delta":{"content":"hi"}}]}
+data: {"id":"2","error":{"type":"internal_error","message":"boom"}}
+data: [DONE]
+`
+
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	pr, pw := io.Pipe()
+	go func() {
+		_, _ = pw.Write([]byte(streamBody))
+		_ = pw.Close()
+	}()
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_nonnvidia_sse_err"}},
+		Body:       pr,
+	}}
+
+	svc := &OpenAIGatewayService{
+		cfg:          rawChatCompletionsTestConfig(),
+		httpUpstream: upstream,
+	}
+	metrics := NewNVIDIASharedConnectionPoolMetrics()
+	svc.SetNVIDIASharedPoolMetricsForSorting(metrics)
+	account := rawChatCompletionsTestAccount()
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, result.StreamInterrupted, "non-NVIDIA SSE error event must not mark StreamInterrupted=true")
+
+	output := rec.Body.String()
+	require.NotContains(t, output, "upstream_midstream_error", "non-NVIDIA error text must be forwarded as-is")
+	require.Contains(t, output, `"message":"boom"`, "original error payload must reach the client")
+	require.Zero(t, metrics.SnapshotAccountReuse(account.ID).RecentFailCount,
+		"non-NVIDIA SSE error must not be recorded as NVIDIA upstream failure")
+}

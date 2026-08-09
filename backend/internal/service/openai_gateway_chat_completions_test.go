@@ -1042,3 +1042,54 @@ func TestBuildChatStreamErrorSSE(t *testing.T) {
 	require.Equal(t, "cyber_policy", gjson.Get(payload, "error.code").String())
 	require.Equal(t, "blocked by policy", gjson.Get(payload, "error.message").String())
 }
+
+// TestNVIDIAAdaptiveThrottleSuccess_IgnoresNonNVIDIAAccount B1''-3 回归：
+// 成功路径（ForwardAsChatCompletions 末尾的 200 记录）必须带
+// isNVIDIAAccountByHostname guard：OAuth/非 NVIDIA 账号的成功结果不得写入
+// NVIDIA throttle cache（否则 DecaySpacing 状态被非 NVIDIA 流量污染）。
+func TestNVIDIAAdaptiveThrottleSuccess_IgnoresNonNVIDIAAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamBody := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-5.4","status":"in_progress","output":[]}}`,
+		"",
+		`data: {"type":"response.output_text.delta","delta":"ok"}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","model":"gpt-5.4","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":11,"output_tokens":5,"total_tokens":16,"input_tokens_details":{"cached_tokens":4}}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_chat_success_ignored"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+
+	cache := &countingNvidiaCache{}
+	rateLimitSvc := NewRateLimitService(&rateLimitAccountRepoStub{}, nil, &config.Config{}, nil, nil)
+	rateLimitSvc.SetNvidiaAdaptiveThrottleCache(cache)
+	svc := &OpenAIGatewayService{httpUpstream: upstream, rateLimitService: rateLimitSvc}
+	account := &Account{
+		ID:          1,
+		Name:        "openai-oauth",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"access_token":       "oauth-token",
+			"chatgpt_account_id": "chatgpt-acc",
+		},
+	}
+
+	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "gpt-5.1")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 0, cache.applyCount(), "non-NVIDIA success must not be recorded into NVIDIA adaptive throttle cache")
+}
