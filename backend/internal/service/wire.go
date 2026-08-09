@@ -369,7 +369,7 @@ func ProvideNVIDIAConnectionPrewarmer(upstream HTTPUpstream, accountRepo Account
 // ProvideNVIDIAInferencePrewarmer creates and starts NVIDIAInferencePrewarmer.
 // 默认启用（settings.nvidia_shared_connection_pool.inference_prewarm_enabled
 // 默认 "true"）；读配置失败时回退默认值（启用 / 3600s / 空模型）。
-func ProvideNVIDIAInferencePrewarmer(upstream HTTPUpstream, accountRepo AccountRepository, settingService *SettingService) *NVIDIAInferencePrewarmer {
+func ProvideNVIDIAInferencePrewarmer(upstream HTTPUpstream, accountRepo AccountRepository, settingService *SettingService, metrics *NVIDIASharedConnectionPoolMetrics) *NVIDIAInferencePrewarmer {
 	pool := DefaultNVIDIASharedPoolSettings()
 	if settingService != nil {
 		if s, err := settingService.GetNVIDIASharedPoolSettings(context.Background()); err == nil && s != nil {
@@ -385,6 +385,7 @@ func ProvideNVIDIAInferencePrewarmer(upstream HTTPUpstream, accountRepo AccountR
 		pool.InferencePrewarmEnabled,
 		pool.InferencePrewarmIntervalSec,
 		pool.InferencePrewarmModel,
+		metrics,
 	)
 	svc.Start()
 	return svc

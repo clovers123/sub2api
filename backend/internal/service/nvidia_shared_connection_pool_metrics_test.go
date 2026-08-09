@@ -159,4 +159,48 @@ func TestNVIDIASharedConnectionPoolMetrics_SetMaxConnsPerHost(t *testing.T) {
 	require.Equal(t, 240, m.Snapshot().MaxConnsPerHost, "negative must not overwrite")
 }
 
+func TestRecordInferencePrewarm_SuccessCountsAndTimestamp(t *testing.T) {
+	m := NewNVIDIASharedConnectionPoolMetrics()
+	m.RecordInferencePrewarm(7, true)
+	time.Sleep(time.Millisecond)
+	last1, success, fail := m.SnapshotPrewarm(7)
+	require.Equal(t, int64(1), success, "success_total must increment")
+	require.Equal(t, int64(0), fail, "success must not touch fail_total")
+	require.Greater(t, last1, int64(0), "success must write lastPrewarmAt")
+
+	m.RecordInferencePrewarm(7, true)
+	last2, success2, fail2 := m.SnapshotPrewarm(7)
+	require.Equal(t, int64(2), success2)
+	require.Equal(t, int64(0), fail2)
+	require.GreaterOrEqual(t, last2, last1, "newer prewarm must not regress lastPrewarmAt")
+}
+
+func TestRecordInferencePrewarm_FailureOnlyIncrementsFailTotal(t *testing.T) {
+	m := NewNVIDIASharedConnectionPoolMetrics()
+	m.RecordInferencePrewarm(8, false)
+	lastAt, success, fail := m.SnapshotPrewarm(8)
+	require.Equal(t, int64(0), success, "failure must not touch success_total")
+	require.Equal(t, int64(1), fail)
+	require.Equal(t, int64(0), lastAt, "failure must not write lastPrewarmAt")
+
+	m.RecordInferencePrewarm(8, true)
+	lastAt, success, fail = m.SnapshotPrewarm(8)
+	require.Equal(t, int64(1), success)
+	require.Equal(t, int64(1), fail)
+	require.Greater(t, lastAt, int64(0))
+}
+
+func TestRecordInferencePrewarm_NilSafeAndBadArgs(t *testing.T) {
+	var m *NVIDIASharedConnectionPoolMetrics
+	require.NotPanics(t, func() {
+		m.RecordInferencePrewarm(1, true)
+		m.RecordInferencePrewarm(1, false)
+	})
+	m = NewNVIDIASharedConnectionPoolMetrics()
+	m.RecordInferencePrewarm(0, true)
+	_, success, fail := m.SnapshotPrewarm(0)
+	require.Equal(t, int64(0), success, "accountID=0 rejected")
+	require.Equal(t, int64(0), fail, "accountID=0 rejected")
+}
+
 var _ = NewNVIDIASharedConnectionPoolMetrics

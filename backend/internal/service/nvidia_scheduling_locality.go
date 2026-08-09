@@ -41,7 +41,9 @@ func nvidiaThrottleLocalityEnabled(ctx context.Context) bool {
 //     "skip load signal, prioritize LastUsedAt recursion"
 //  3. LastUsedAt (newer = higher) — opposite of LRU: keeps cache-warm accounts first
 //  4. (same LastUsedAt second) — prefer account with positive connection reuse heat
-//  5. (everything tie-bounded) — shuffle randomly inside the same (priority + LastUsedAt) bucket
+//  5. (same heat) — prefer higher RPM baseline (arguable C capacity signal)
+//  6. (same heat + baseline) — prefer account with more recent inference prewarm (G)
+//  7. (everything tie-bounded) — shuffle randomly inside the same sort bucket
 //
 // This function does NOT mutate schedule candidates. Caller passes metrics so
 // connection reuse heat can be queried without leaking repository internals for
@@ -125,6 +127,24 @@ func sortNvidiaThrottleSchedulingOrder(candidates []*Account, metrics *NVIDIASha
 			}
 			bucketStart = bucketEnd
 		}
+
+		// G: 同 heat+baseline 桶内按 prewarm 新→旧稳定排序。
+		// 最近预热成功的账号优先承载流量（KV cache 仍在热态），
+		// 不改变 heat / baseline 桶边界语义（见 sameNvidiaPrewarmBucket）。
+		bucketStart = 0
+		for bucketStart < len(live) {
+			bucketEnd := bucketStart + 1
+			for bucketEnd < len(live) && sameNvidiaPrewarmBucket(live[bucketStart], live[bucketEnd], metrics) {
+				bucketEnd++
+			}
+			if bucketEnd-bucketStart > 1 {
+				sort.SliceStable(live[bucketStart:bucketEnd], func(i, j int) bool {
+					a, b := live[bucketStart+i], live[bucketStart+j]
+					return nvidiaPrewarmTieFor(a, b, metrics)
+				})
+			}
+			bucketStart = bucketEnd
+		}
 	}
 
 	// Shuffle inside (priority + LastUsedAt second + reuse heat) buckets to
@@ -176,9 +196,10 @@ func sameNvidiaPriorityAndLastUsedAtSecond(a, b *Account) bool {
 }
 
 // sameNvidiaSortBucket extends sameNvidiaPriorityAndLastUsedAtSecond with
-// reuse-heat + baseline equality, used to bound final shuffle buckets.
+// reuse-heat + baseline + prewarm equality, used to bound final shuffle buckets.
 // 必须包含 baseline 维度：否则 C 优化的 baseline 排序结果会被随后的
 // rand.Shuffle 洗掉，让同等 heat 但 baseline 不同的账号失去 C 优化意图。
+// 必须包含 prewarm 维度：否则 G 的 prewarm tiebreak 排序成果被 shuffle 洗掉。
 func sameNvidiaSortBucket(a, b *Account, metrics *NVIDIASharedConnectionPoolMetrics) bool {
 	if !sameNvidiaPriorityAndLastUsedAtSecond(a, b) {
 		return false
@@ -189,7 +210,10 @@ func sameNvidiaSortBucket(a, b *Account, metrics *NVIDIASharedConnectionPoolMetr
 	if nvidiaReuseHeatFor(a, metrics) != nvidiaReuseHeatFor(b, metrics) {
 		return false
 	}
-	return nvidiaBaselineRPMFor(a, metrics) == nvidiaBaselineRPMFor(b, metrics)
+	if nvidiaBaselineRPMFor(a, metrics) != nvidiaBaselineRPMFor(b, metrics) {
+		return false
+	}
+	return nvidiaPrewarmInSameBucket(a, b, metrics)
 }
 
 // sameNvidiaHeatBucket reports whether two accounts have identical
@@ -207,6 +231,17 @@ func sameNvidiaHeatBucket(a, b *Account, metrics *NVIDIASharedConnectionPoolMetr
 	return nvidiaReuseHeatFor(a, metrics) == nvidiaReuseHeatFor(b, metrics)
 }
 
+// sameNvidiaPrewarmBucket reports whether two accounts share the same
+// (priority + LastUsedAt + heat + baseline) bucket, which bounds the fourth
+// prewarm tiebreak. Prewarm score is compared only within this bucket so the
+// heat/baseline sorting stays untouched.
+func sameNvidiaPrewarmBucket(a, b *Account, metrics *NVIDIASharedConnectionPoolMetrics) bool {
+	if !sameNvidiaHeatBucket(a, b, metrics) {
+		return false
+	}
+	return nvidiaBaselineRPMFor(a, metrics) == nvidiaBaselineRPMFor(b, metrics)
+}
+
 // nvidiaReuseHeatFor returns a comparable heat scalar for an account.
 // Accounts with more reuse history (positive heat) sort after accounts with
 // less reuse in sortNvidiaThrottleSchedulingOrder. Recent upstream failures
@@ -220,6 +255,35 @@ func nvidiaReuseHeatFor(a *Account, metrics *NVIDIASharedConnectionPoolMetrics) 
 	}
 	snap := metrics.SnapshotAccountReuse(a.ID)
 	return snap.ReusedTotal - snap.RecentFailCount*3
+}
+
+// nvidiaPrewarmFailEligibilityThreshold 是 prewarm 参与排序的最大累计失败数。
+// 超过该值的账号视为"无 prewarm"（打分为 0），避免传输层频繁失败的账号
+// 凭借历史成功预热在 tiebreak 中占优（plan 5 风险缓解）。
+const nvidiaPrewarmFailEligibilityThreshold = 2
+
+// nvidiaPrewarmScoreFor 返回账号用于调度排序的 prewarm 有效得分（unix-nano）。
+// 最近一次成功预热时间仅在累计失败数 ≤ 阈值时计入；否则返回 0（视为未预热）。
+func nvidiaPrewarmScoreFor(a *Account, metrics *NVIDIASharedConnectionPoolMetrics) int64 {
+	if a == nil || metrics == nil {
+		return 0
+	}
+	lastAt, _, failTotal := metrics.SnapshotPrewarm(a.ID)
+	if failTotal > nvidiaPrewarmFailEligibilityThreshold {
+		return 0
+	}
+	return lastAt
+}
+
+// nvidiaPrewarmTieFor 报告同 heat+baseline 桶内 a 是否应排在 b 前：
+// a 的有效 prewarm 得分更高（更新鲜的预热）时优先。
+func nvidiaPrewarmTieFor(a, b *Account, metrics *NVIDIASharedConnectionPoolMetrics) bool {
+	return nvidiaPrewarmScoreFor(a, metrics) > nvidiaPrewarmScoreFor(b, metrics)
+}
+
+// nvidiaPrewarmInSameBucket 报告两个账号是否同属 prewarm 排序桶（有效得分相等）。
+func nvidiaPrewarmInSameBucket(a, b *Account, metrics *NVIDIASharedConnectionPoolMetrics) bool {
+	return nvidiaPrewarmScoreFor(a, metrics) == nvidiaPrewarmScoreFor(b, metrics)
 }
 
 // nvidiaBaselineRPMFor returns the account's current RPM baseline (successful
