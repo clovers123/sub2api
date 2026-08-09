@@ -46,20 +46,24 @@ type NVIDIASharedConnectionPoolMetrics struct {
 // 1 分钟滑动窗口内的成功请求计数，作为账号当前吞吐基线的近似（≈当前 RPM）。
 // 调度排序在同 heat 桶内优先选择基线高的账号（容量大的账号优先）。
 type nvidiaAccountReuseState struct {
-	reusedTotal              atomic.Int64
-	lastReuseAtNano          atomic.Int64
-	recentFailCount          atomic.Int64
-	consecutiveReuseSuccess  atomic.Int64
+	reusedTotal             atomic.Int64
+	lastReuseAtNano         atomic.Int64
+	recentFailCount         atomic.Int64
+	consecutiveReuseSuccess atomic.Int64
 	// F9: 记录最近一次失败时间(unix-nano)，与 lastReuseAtNano 对称。
 	// 当前仅写入不读取，为后续可能引入"基于时间窗的衰减"留钩子；N3 当前
 	// 仍靠 consecutiveReuseSuccess 驱动衰减以保持 hot-path 无锁。
-	lastFailAtNano           atomic.Int64
+	lastFailAtNano atomic.Int64
 	// P1: 连续 5xx 计数与窗口起点（unix-nano），用于触发短期 BlockAccountScheduling 冷却。
-	consecutive5xxCount      atomic.Int64
-	first5xxAtNano           atomic.Int64
+	consecutive5xxCount atomic.Int64
+	first5xxAtNano      atomic.Int64
 	// C: RPM 基线 —— 1 分钟滑动窗口内的成功请求计数 + 窗口起点。
-	baselineWindowRequests   atomic.Int64
+	baselineWindowRequests      atomic.Int64
 	baselineWindowStartedAtNano atomic.Int64
+	// G: 推理预热结果；scheduler 仅在 failTotal≤2 时按 lastPrewarmAtNano 加分。
+	lastPrewarmAtNano   atomic.Int64
+	prewarmSuccessTotal atomic.Int64
+	prewarmFailTotal    atomic.Int64
 }
 
 // nvidiaBaselineWindowSeconds 是 RPM 基线滑窗长度（秒）。
@@ -349,6 +353,62 @@ func (m *NVIDIASharedConnectionPoolMetrics) RecordConsecutive5xx(accountID int64
 	return elapsed <= window
 }
 
+// RecordInferencePrewarm records an NVIDIA inference prewarm outcome per account.
+// ok=true means a reusable prewarm (the upstream accepted the request in a way
+// that warms the model); it stamps lastPrewarmAtNano and increments success.
+// ok=false increments the transport-failure counter only — it never touches
+// lastPrewarmAtNano, so repeated transport failures can not masquerade as a
+// recently warmed account.
+func (m *NVIDIASharedConnectionPoolMetrics) RecordInferencePrewarm(accountID int64, ok bool) {
+	if m == nil || accountID <= 0 {
+		return
+	}
+	m.accountReuseMu.Lock()
+	if m.accountReuseBy == nil {
+		m.accountReuseBy = make(map[int64]*nvidiaAccountReuseState)
+	}
+	state, ok2 := m.accountReuseBy[accountID]
+	if !ok2 {
+		state = &nvidiaAccountReuseState{}
+		m.accountReuseBy[accountID] = state
+	}
+	m.accountReuseMu.Unlock()
+
+	if !ok {
+		state.prewarmFailTotal.Add(1)
+		return
+	}
+	state.prewarmSuccessTotal.Add(1)
+	casLastPrewarmAtNano(state, time.Now().UnixNano())
+}
+
+// SnapshotPrewarm returns (lastPrewarmAtUnixNano, successTotal, failTotal)
+// for an account. Zero values are returned for unknown accounts.
+func (s *NVIDIASharedConnectionPoolMetrics) SnapshotPrewarm(accountID int64) (lastAtUnixNano, successTotal, failTotal int64) {
+	if s == nil || accountID <= 0 {
+		return 0, 0, 0
+	}
+	s.accountReuseMu.Lock()
+	state, ok := s.accountReuseBy[accountID]
+	s.accountReuseMu.Unlock()
+	if !ok || state == nil {
+		return 0, 0, 0
+	}
+	return state.lastPrewarmAtNano.Load(), state.prewarmSuccessTotal.Load(), state.prewarmFailTotal.Load()
+}
+
+func casLastPrewarmAtNano(state *nvidiaAccountReuseState, ts int64) {
+	for {
+		old := state.lastPrewarmAtNano.Load()
+		if ts <= old {
+			break
+		}
+		if state.lastPrewarmAtNano.CompareAndSwap(old, ts) {
+			break
+		}
+	}
+}
+
 func casLastFailAtNano(state *nvidiaAccountReuseState, ts int64) {
 	for {
 		old := state.lastFailAtNano.Load()
@@ -398,7 +458,7 @@ func (m *NVIDIASharedConnectionPoolMetrics) Snapshot() NVIDIASharedConnectionPoo
 		Reuse:                         NVIDIASharedConnectionReuseSnapshot{ReusedTotal: m.reusedTotal.Load(), NotReusedTotal: m.notReusedTotal.Load()},
 		AccountSwitchToRequestWritten: m.accountSwitchToRequestWritten.snapshot(),
 		DNS:                           m.dns.snapshot(), Connect: m.connect.snapshot(), TLSHandshake: m.tlsHandshake.snapshot(), TTFB: m.ttfb.snapshot(),
-		MaxConnsPerHost:               int(m.maxConnsPerHost.Load()),
+		MaxConnsPerHost: int(m.maxConnsPerHost.Load()),
 	}
 }
 

@@ -86,7 +86,7 @@ func TestNVIDIAInferencePrewarmer_OneShotRoundsFiresForEachNVIDIAAccount(t *test
 	})
 	repo := &fakeInferencePrewarmAccountRepo{accounts: []Account{account}}
 
-	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "")
+	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "", nil)
 	p.Start()
 	defer p.Stop()
 
@@ -111,7 +111,7 @@ func TestNVIDIAInferencePrewarmer_ModelOverrideWins(t *testing.T) {
 	})
 	repo := &fakeInferencePrewarmAccountRepo{accounts: []Account{account}}
 
-	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "nvidia/override-model")
+	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "nvidia/override-model", nil)
 	p.Start()
 	defer p.Stop()
 
@@ -133,7 +133,7 @@ func TestNVIDIAInferencePrewarmer_SkipsNonNVIDIAAndCredentialLess(t *testing.T) 
 	noMapping := nvidiaInferencePrewarmTestAccount(4, "https://integrate.api.nvidia.com/v1", "key-4", nil)
 	repo := &fakeInferencePrewarmAccountRepo{accounts: []Account{good, nonNvidia, noKey, noMapping}}
 
-	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "")
+	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "", nil)
 	p.Start()
 	defer p.Stop()
 
@@ -152,7 +152,7 @@ func TestNVIDIAInferencePrewarmer_DisabledIsNoOp(t *testing.T) {
 	}}
 	repo := &fakeInferencePrewarmAccountRepo{accounts: []Account{*account}}
 
-	p := NewNVIDIAInferencePrewarmer(upstream, repo, false, 0, "")
+	p := NewNVIDIAInferencePrewarmer(upstream, repo, false, 0, "", nil)
 	p.Start()
 	time.Sleep(50 * time.Millisecond)
 	p.Stop()
@@ -168,7 +168,7 @@ func TestNVIDIAInferencePrewarmer_RecordsFailures(t *testing.T) {
 	}}
 	repo := &fakeInferencePrewarmAccountRepo{accounts: []Account{*account}}
 
-	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "")
+	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "", nil)
 	p.Start()
 	defer p.Stop()
 
@@ -187,7 +187,7 @@ func TestNVIDIAInferencePrewarmer_StartStopRoundtrip(t *testing.T) {
 		}},
 	}}
 
-	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "")
+	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "", nil)
 	p.Start()
 	waitForRounds(t, p, 1)
 	p.Stop()
@@ -196,4 +196,44 @@ func TestNVIDIAInferencePrewarmer_StartStopRoundtrip(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	p.Stop()
 	require.Equal(t, 1, upstream.count())
+}
+
+func TestNVIDIAInferencePrewarmer_SuccessFeedsMetricsSnapshot(t *testing.T) {
+	upstream := &fakeInferencePrewarmUpstream{}
+	account := &Account{ID: 5, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{
+		"base_url": "https://integrate.api.nvidia.com/v1", "api_key": "key-1",
+		"model_mapping": map[string]any{"user-model": "nvidia/model-a"},
+	}}
+	repo := &fakeInferencePrewarmAccountRepo{accounts: []Account{*account}}
+	metrics := NewNVIDIASharedConnectionPoolMetrics()
+
+	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "", metrics)
+	p.Start()
+	defer p.Stop()
+
+	waitForRounds(t, p, 1)
+	lastAt, success, fail := metrics.SnapshotPrewarm(5)
+	require.Equal(t, int64(1), success, "successful prewarm must land in metrics success_total")
+	require.Equal(t, int64(0), fail)
+	require.Greater(t, lastAt, int64(0), "successful prewarm must stamp lastPrewarmAt")
+}
+
+func TestNVIDIAInferencePrewarmer_TransportFailureFeedsMetricsFailTotal(t *testing.T) {
+	upstream := &fakeInferencePrewarmUpstream{failNext: true}
+	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{
+		"base_url": "https://integrate.api.nvidia.com/v1", "api_key": "key-1",
+		"model_mapping": map[string]any{"user-model": "nvidia/model-a"},
+	}}
+	repo := &fakeInferencePrewarmAccountRepo{accounts: []Account{*account}}
+	metrics := NewNVIDIASharedConnectionPoolMetrics()
+
+	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "", metrics)
+	p.Start()
+	defer p.Stop()
+
+	waitForRounds(t, p, 1)
+	lastAt, success, fail := metrics.SnapshotPrewarm(1)
+	require.Equal(t, int64(1), fail, "transport failure must write metrics fail_total")
+	require.Equal(t, int64(0), success)
+	require.Equal(t, int64(0), lastAt, "failed prewarm must not stamp lastPrewarmAt")
 }

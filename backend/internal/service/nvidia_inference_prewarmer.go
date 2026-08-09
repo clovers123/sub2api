@@ -37,6 +37,8 @@ type NVIDIAInferencePrewarmer struct {
 	enabled     bool
 	interval    time.Duration
 	model       string // 显式配置的模型；空 = 使用账号模型映射第一个目标
+	// metrics 将预热结果反馈给调度排序；nil 容忍（观测/测试可不注入）。
+	metrics *NVIDIASharedConnectionPoolMetrics
 
 	stopCh    chan struct{}
 	stopOnce  sync.Once
@@ -56,12 +58,23 @@ type NVIDIAInferencePrewarmer struct {
 //   - enabled: 是否启用（settings.inference_prewarm_enabled，默认 true）
 //   - intervalSeconds: 保活间隔秒数；0 表示仅启动时预热一次，不开定时器
 //   - model: 预热模型；空串表示使用账号模型映射的第一个目标
+//
+// NewNVIDIAInferencePrewarmer 构造 NVIDIA 推理预热器。
+//
+// 参数:
+//   - upstream: 推理预热能力（repository 的 httpUpstreamService 实现）
+//   - accountRepo: 账号查询（取 openai 平台账号并携带 NVIDIA 凭据）
+//   - enabled: 是否启用（settings.inference_prewarm_enabled，默认 true）
+//   - intervalSeconds: 保活间隔秒数；0 表示仅启动时预热一次，不开定时器
+//   - model: 预热模型；空串表示使用账号模型映射的第一个目标
+//   - metrics: 预热结果反馈给调度排序的指标器；nil 时跳过记录（观测/测试）
 func NewNVIDIAInferencePrewarmer(
 	upstream NVIDIAInferencePrewarmUpstream,
 	accountRepo nvidiaPrewarmAccountLister,
 	enabled bool,
 	intervalSeconds int,
 	model string,
+	metrics *NVIDIASharedConnectionPoolMetrics,
 ) *NVIDIAInferencePrewarmer {
 	return &NVIDIAInferencePrewarmer{
 		upstream:    upstream,
@@ -69,6 +82,7 @@ func NewNVIDIAInferencePrewarmer(
 		enabled:     enabled,
 		interval:    time.Duration(intervalSeconds) * time.Second,
 		model:       model,
+		metrics:     metrics,
 		stopCh:      make(chan struct{}),
 	}
 }
@@ -177,6 +191,7 @@ func (p *NVIDIAInferencePrewarmer) runOnce() {
 			defer roundWG.Done()
 			defer func() { <-sem }()
 			err := p.prewarmAccount(ctx, account)
+			p.recordPrewarmResult(account, err)
 			countMu.Lock()
 			defer countMu.Unlock()
 			if err != nil {
@@ -230,6 +245,17 @@ func (p *NVIDIAInferencePrewarmer) prewarmAccount(ctx context.Context, account *
 		account.GetCredential("api_key"),
 		p.resolveModel(account),
 	)
+}
+
+// recordPrewarmResult 将单账号预热结果回写 metrics，用于调度排序加分。
+// repository 的 PrewarmNVIDIAInference 返回值不携带 HTTP 状态码（任何 HTTP
+// 状态均返回 nil），故按保守方案：任何 error 视为传输层失败记 failTotal，
+// 成功（nil error）才写 lastPrewarmAt + successTotal。
+func (p *NVIDIAInferencePrewarmer) recordPrewarmResult(account *Account, err error) {
+	if p == nil || p.metrics == nil || account == nil {
+		return
+	}
+	p.metrics.RecordInferencePrewarm(account.ID, err == nil)
 }
 
 // resolveModel 解析预热模型：显式配置优先，否则取账号模型映射第一个目标。
