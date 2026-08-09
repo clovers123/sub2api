@@ -140,6 +140,21 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 		return true
 	}
 
+	// NVIDIA 免费 API Worker 池耗尽型 429（ResourceExhausted）：在 adaptive 之前短路，
+	// 保证 2min 冷却在生产路径（adaptive 启用 + canonicalModel 非空）下仍生效。
+	// RecordNVIDIAAdaptiveThrottleOutcome 把一切 429 判为 rate 信号并提前 return，
+	// 若此处不拦截，resource 429 会被当成瞬时 RPM 短退避，2min 冷却永不触发（B1 回归）。
+	// 仅限 429：503 capacity 仍走下方 adaptive capacity 惩罚，不改变批次 1 语义。
+	if account.Type == AccountTypeAPIKey && statusCode == http.StatusTooManyRequests &&
+		isNVIDIAResourceExhaustedError(statusCode, responseBody) {
+		recordNVIDIAUpstreamFailure(s, ctx, account, statusCode, responseBody, nvidiaReasonResourceExhausted)
+		s.BlockAccountScheduling(account, time.Now().Add(nvidiaResourceExhaustedCooldown), "nvidia_resource_exhausted")
+		if s.rateLimitService != nil {
+			_ = s.rateLimitService.HandleUpstreamError(stateCtx, account, statusCode, headers, responseBody)
+		}
+		return true
+	}
+
 	// NVIDIA 自适应节流：在进入旧有的 isNVIDIAResourceExhaustedError 全账户分支之前，
 	// 将上游结果记录到自适应节流缓存中。命中被处理的信号（429 / 503 capacity）时，
 	// 立即判定 shouldDisable=true 并提前返回，不再执行下方的全账户封锁策略。

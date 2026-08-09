@@ -564,3 +564,73 @@ func TestIsNvidiaPrewarmBlocked_NilSafeAndBadArgs(t *testing.T) {
 	require.False(t, svc.IsNvidiaPrewarmBlocked(0), "accountID<=0 rejected")
 	require.False(t, svc.IsNvidiaPrewarmBlocked(-5), "accountID<=0 rejected")
 }
+
+// fakeAcceptingNvidiaCache Apply/Reserve 都成功返回, 模拟 adaptive throttle 完全放行的 L2。
+type fakeAcceptingNvidiaCache struct{}
+
+func (f *fakeAcceptingNvidiaCache) Reserve(_ context.Context, _ int64, _ string) (NvidiaCacheReserveResult, error) {
+	return NvidiaCacheReserveResult{Allowed: true}, nil
+}
+func (f *fakeAcceptingNvidiaCache) Apply(_ context.Context, _ int64, _ string, _ NvidiaThrottleRate) error {
+	return nil
+}
+
+// TestNVIDIAQuotaFastPath_Resource429Keeps2MinCooldownWithAdaptiveEnabled 回归：
+// adaptive throttle 启用（rateLimitService 非 nil + canonicalModel 非空）时,
+// ResourceExhausted 429 仍必须进入 2min BlockAccountScheduling, 不能被
+// RecordNVIDIAAdaptiveThrottleOutcome 判为 rate 提前 return（B1）。
+func TestNVIDIAQuotaFastPath_Resource429Keeps2MinCooldownWithAdaptiveEnabled(t *testing.T) {
+	rateLimitSvc := NewRateLimitService(&rateLimitAccountRepoStub{}, nil, &config.Config{}, nil, nil)
+	rateLimitSvc.SetNvidiaAdaptiveThrottleCache(&fakeAcceptingNvidiaCache{})
+	svc := &OpenAIGatewayService{rateLimitService: rateLimitSvc}
+	account := &Account{
+		ID:       54,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url": "https://integrate.api.nvidia.com/v1",
+			"api_key":  "nvapi-test-key",
+		},
+	}
+
+	body := []byte(`{"error":{"code":"ResourceExhausted","message":"Worker local total request limit exceeded"}}`)
+	shouldDisable := svc.handleOpenAIAccountUpstreamError(
+		context.Background(), account, http.StatusTooManyRequests, http.Header{}, body,
+		"nvidia/llama-3.3-70b",
+	)
+
+	require.True(t, shouldDisable, "resource-class 429 must still short-circuit with adaptive enabled")
+	value, ok := svc.openaiAccountRuntimeBlockUntil.Load(account.ID)
+	require.True(t, ok, "resource 429 must land in runtime block even with adaptive enabled")
+	blockedUntil, ok := value.(time.Time)
+	require.True(t, ok)
+	require.WithinDuration(t, time.Now().Add(nvidiaResourceExhaustedCooldown), blockedUntil, 5*time.Second,
+		"adaptive enabled must not swallow the 2min resource cooldown")
+}
+
+// TestNVIDIAQuotaFastPath_Rate429StillAdaptiveWithAdaptiveEnabled 回归：
+// 普通 rate 语义 429 在 adaptive 启用时仍走 adaptive 路径（不被 resource/quota 抢占）。
+func TestNVIDIAQuotaFastPath_Rate429StillAdaptiveWithAdaptiveEnabled(t *testing.T) {
+	rateLimitSvc := NewRateLimitService(&rateLimitAccountRepoStub{}, nil, &config.Config{}, nil, nil)
+	rateLimitSvc.SetNvidiaAdaptiveThrottleCache(&fakeAcceptingNvidiaCache{})
+	svc := &OpenAIGatewayService{rateLimitService: rateLimitSvc}
+	account := &Account{
+		ID:       55,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url": "https://integrate.api.nvidia.com/v1",
+			"api_key":  "nvapi-test-key",
+		},
+	}
+
+	body := []byte(`{"error":{"message":"Requests per minute limit exceeded, retry in 60s"}}`)
+	shouldDisable := svc.handleOpenAIAccountUpstreamError(
+		context.Background(), account, http.StatusTooManyRequests, http.Header{}, body,
+		"nvidia/llama-3.3-70b",
+	)
+
+	require.True(t, shouldDisable, "rate-class 429 handled by adaptive path")
+	_, ok := svc.openaiAccountRuntimeBlockUntil.Load(account.ID)
+	require.False(t, ok, "rate-class 429 must NOT land in resource/quota runtime block")
+}
