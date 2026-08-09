@@ -324,11 +324,11 @@ nvidiaRetrySucceeded:
 // 降级重试的独立 helper (F5 抽取)，避免与 caller 共用 scope 让 goto 跨越变量声明。
 //
 // 流程：
-//   1. detectNVIDIAUnsupportedParameterError 解析出被 NVIDIA 拒绝的字段名
-//   2. tryNVIDIARetryOnUnsupportedParameter sjson 剥离字段
-//   3. sendCCUpstreamRequest 重发一次同账号请求
-//   4. 若 send 失败 (网络层)：记 N2 retry_send_error 日志 + N3 失败计数 (F2)
-//   5. 返回 (retryResp, sendErr, retried=true) 让 caller 决定后续走 success 还是 failover
+//  1. detectNVIDIAUnsupportedParameterError 解析出被 NVIDIA 拒绝的字段名
+//  2. tryNVIDIARetryOnUnsupportedParameter sjson 剥离字段
+//  3. sendCCUpstreamRequest 重发一次同账号请求
+//  4. 若 send 失败 (网络层)：记 N2 retry_send_error 日志 + N3 失败计数 (F2)
+//  5. 返回 (retryResp, sendErr, retried=true) 让 caller 决定后续走 success 还是 failover
 //
 // caller 责任：替换外层 resp 变量、判断 resp.StatusCode 决定 goto success 还是 failover。
 //
@@ -456,8 +456,9 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 				sawDone = true
 			}
 			if trimmedPayload != "[DONE]" {
-				// D: 累计 data 行 payload 字节，仅计入真实内容行（[DONE] 与空行不计）。
-				outputBytes += len(payload)
+				// D: 累计实际输出字段字节（delta.content/reasoning_content），
+				// 供 NVIDIA 账号缺失 usage 时估算 output tokens（B3：排除 JSON envelope 与 usage-only chunk）。
+				outputBytes += extractCCStreamOutputBytes(payload)
 				// N6: NVIDIA SSE 中段 error event 检测 — 流量中段 data: {"error":...}
 				// 触发节流记录, 用 client 显式 error event 替换原样转发 error 文本
 				if isNVIDIASSEErrorEvent([]byte(payload)) {
@@ -631,6 +632,62 @@ func extractCCStreamUsage(payload string) *OpenAIUsage {
 	return &u
 }
 
+// extractCCStreamOutputBytes 累计单个 CC 流式 chunk 中实际输出字段的字节数
+// （B3）：只计 choices[*].delta.content 与 reasoning_content，用于 NVIDIA 缺失
+// usage 时的 output token 估算。不计入 id/object/model/choices JSON envelope
+// 与 usage-only chunk，避免分块越多估算越虚高。
+func extractCCStreamOutputBytes(payload string) int {
+	if payload == "" {
+		return 0
+	}
+	choices := gjson.Get(payload, "choices")
+	if !choices.Exists() || !choices.IsArray() {
+		return 0
+	}
+	total := 0
+	for _, choice := range choices.Array() {
+		delta := choice.Get("delta")
+		if !delta.Exists() {
+			continue
+		}
+		if content := delta.Get("content"); content.Exists() && content.Type == gjson.String {
+			total += len(content.String())
+		}
+		if reasoning := delta.Get("reasoning_content"); reasoning.Exists() && reasoning.Type == gjson.String {
+			total += len(reasoning.String())
+		}
+	}
+	return total
+}
+
+// extractCCNonStreamOutputBytes 返回 CC 非流式响应中实际输出字段的字节数
+// （B3）：choices[*].message.content 与 reasoning_content，用于 NVIDIA 缺失
+// usage 时的 output token 估算。不使用整个 JSON body 长度（含 id/object/model
+// envelope），避免高估。
+func extractCCNonStreamOutputBytes(body []byte) int {
+	if len(body) == 0 {
+		return 0
+	}
+	choices := gjson.GetBytes(body, "choices")
+	if !choices.Exists() || !choices.IsArray() {
+		return 0
+	}
+	total := 0
+	for _, choice := range choices.Array() {
+		message := choice.Get("message")
+		if !message.Exists() {
+			continue
+		}
+		if content := message.Get("content"); content.Exists() && content.Type == gjson.String {
+			total += len(content.String())
+		}
+		if reasoning := message.Get("reasoning_content"); reasoning.Exists() && reasoning.Type == gjson.String {
+			total += len(reasoning.String())
+		}
+	}
+	return total
+}
+
 // bufferRawChatCompletions 透传上游 CC 非流式 JSON 响应。
 func (s *OpenAIGatewayService) bufferRawChatCompletions(
 	c *gin.Context,
@@ -674,13 +731,14 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 	// 仅在 extractOpenAIUsageFromJSONBytes 未解析出任何可计费 token 时触发，
 	// 上游已给的 cache/image 计费维度原样保留。
 	if isNVIDIAAccountByHostname(account) && openAIUsageIsEmpty(usage) {
-		usage = estimateOpenAIUsageFallback(requestBodyLen, len(respBody))
+		outputBytes := extractCCNonStreamOutputBytes(respBody)
+		usage = estimateOpenAIUsageFallback(requestBodyLen, outputBytes)
 		logger.L().Info("nvidia_usage_estimated",
 			zap.Int64("account_id", account.ID),
 			zap.String("request_id", requestID),
 			zap.Int("estimated_input_tokens", usage.InputTokens),
 			zap.Int("estimated_output_tokens", usage.OutputTokens),
-			zap.Int("output_bytes", len(respBody)),
+			zap.Int("output_bytes", outputBytes),
 		)
 	}
 
