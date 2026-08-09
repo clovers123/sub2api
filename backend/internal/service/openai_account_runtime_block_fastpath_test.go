@@ -634,3 +634,26 @@ func TestNVIDIAQuotaFastPath_Rate429StillAdaptiveWithAdaptiveEnabled(t *testing.
 	_, ok := svc.openaiAccountRuntimeBlockUntil.Load(account.ID)
 	require.False(t, ok, "rate-class 429 must NOT land in resource/quota runtime block")
 }
+
+// TestNVIDIAQuotaFastPath_Resource429IgnoresNonNVIDIAAPIKey B1' 回归：
+// 非 NVIDIA 上游（默认 base_url = api.openai.com）的 API-Key 账号返回
+// ResourceExhausted 语义 429 body 时，不得被 NVIDIA resource 分支 2min 封禁
+// （provider isolation：NVIDIA 分支必须带 isNVIDIAAccountByHostname guard）。
+func TestNVIDIAQuotaFastPath_Resource429IgnoresNonNVIDIAAPIKey(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:       56,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey, // 默认 base_url = api.openai.com → 非 NVIDIA
+		Credentials: map[string]any{
+			"api_key": "sk-openai-key",
+		},
+	}
+
+	body := []byte(`{"error":{"code":"ResourceExhausted","message":"Worker local total request limit exceeded"}}`)
+	shouldDisable := svc.handleOpenAIAccountUpstreamError(context.Background(), account, http.StatusTooManyRequests, http.Header{}, body)
+
+	require.False(t, shouldDisable, "non-NVIDIA API key must not be pulled into nvidia resource fastpath")
+	_, ok := svc.openaiAccountRuntimeBlockUntil.Load(account.ID)
+	require.False(t, ok, "non-NVIDIA API key must not be 2min blocked by nvidia resource branch")
+}

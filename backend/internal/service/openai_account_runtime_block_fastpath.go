@@ -144,8 +144,10 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	// 保证 2min 冷却在生产路径（adaptive 启用 + canonicalModel 非空）下仍生效。
 	// RecordNVIDIAAdaptiveThrottleOutcome 把一切 429 判为 rate 信号并提前 return，
 	// 若此处不拦截，resource 429 会被当成瞬时 RPM 短退避，2min 冷却永不触发（B1 回归）。
-	// 仅限 429：503 capacity 仍走下方 adaptive capacity 惩罚，不改变批次 1 语义。
-	if account.Type == AccountTypeAPIKey && statusCode == http.StatusTooManyRequests &&
+	// 仅限 NVIDIA API-Key 账号 + 429：非 NVIDIA 上游同类 body 不得误封（provider isolation）；
+	// 503 capacity 仍走下方 adaptive capacity 惩罚，不改变批次 1 语义。
+	if account.Type == AccountTypeAPIKey && isNVIDIAAccountByHostname(account) &&
+		statusCode == http.StatusTooManyRequests &&
 		isNVIDIAResourceExhaustedError(statusCode, responseBody) {
 		recordNVIDIAUpstreamFailure(s, ctx, account, statusCode, responseBody, nvidiaReasonResourceExhausted)
 		s.BlockAccountScheduling(account, time.Now().Add(nvidiaResourceExhaustedCooldown), "nvidia_resource_exhausted")
@@ -189,7 +191,10 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 
 	// NVIDIA 免费 API 的 Worker 池耗尽 (ResourceExhausted)：强制冷却账号并阻止 failover 扩散。
 	// 如果 temp_unschedulable_rules 已独立匹配，此分支作为补充保障路径，确保账号被立即内存封锁。
-	if account.Type == AccountTypeAPIKey && isNVIDIAResourceExhaustedError(statusCode, responseBody) {
+	// B1'：带 hostname guard，非 NVIDIA API-Key 账号同类 body 不得误封（429 已被上方新分支拦截，
+	// 此分支仅剩 503 capacity fallback 可达）。
+	if account.Type == AccountTypeAPIKey && isNVIDIAAccountByHostname(account) &&
+		isNVIDIAResourceExhaustedError(statusCode, responseBody) {
 		recordNVIDIAUpstreamFailure(s, ctx, account, statusCode, responseBody, nvidiaReasonResourceExhausted)
 		s.BlockAccountScheduling(account, time.Now().Add(nvidiaResourceExhaustedCooldown), "nvidia_resource_exhausted")
 		if s.rateLimitService != nil {
