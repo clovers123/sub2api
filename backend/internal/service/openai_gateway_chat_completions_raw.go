@@ -311,7 +311,7 @@ nvidiaRetrySucceeded:
 	if clientStream {
 		result, forwardErr = s.streamRawChatCompletions(c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, len(body))
 	} else {
-		result, forwardErr = s.bufferRawChatCompletions(c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+		result, forwardErr = s.bufferRawChatCompletions(c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, len(body))
 	}
 	if result != nil {
 		addOpenAIUsage(&result.Usage, bridgeUsage)
@@ -411,6 +411,10 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	pendingLines := make([]string, 0, 8)
 	refusalDetector := newOpenAIChatSilentRefusalDetector(requestBodyLen)
 
+	// D: 累计 SSE data 行 payload 的字节数，供 NVIDIA 账号缺失 usage 时估算 output tokens。
+	// 只累加 `data: ` 行的 payload（[DONE] 与空行不计入），见 estimateOpenAIUsageFallback。
+	outputBytes := 0
+
 	writeLine := func(line string) {
 		if clientDisconnected {
 			return
@@ -452,6 +456,8 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 				sawDone = true
 			}
 			if trimmedPayload != "[DONE]" {
+				// D: 累计 data 行 payload 字节，仅计入真实内容行（[DONE] 与空行不计）。
+				outputBytes += len(payload)
 				// N6: NVIDIA SSE 中段 error event 检测 — 流量中段 data: {"error":...}
 				// 触发节流记录, 用 client 显式 error event 替换原样转发 error 文本
 				if isNVIDIASSEErrorEvent([]byte(payload)) {
@@ -557,6 +563,20 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		}
 	}
 
+	// D: NVIDIA 免费 API 流式响应常缺失 usage（不注入 include_usage 时上游不返回）。
+	// 正常结束（非中断）且 usage 完全为空 → 用请求/响应字节估算兜底，避免下游零计费。
+	// 中断流已在 N6/B 路径记为失败，不填估算以免把失败流按成功计费。
+	if !streamInterrupted && isNVIDIAAccountByHostname(account) && openAIUsageIsEmpty(usage) {
+		usage = estimateOpenAIUsageFallback(requestBodyLen, outputBytes)
+		logger.L().Info("nvidia_usage_estimated",
+			zap.Int64("account_id", account.ID),
+			zap.String("request_id", requestID),
+			zap.Int("estimated_input_tokens", usage.InputTokens),
+			zap.Int("estimated_output_tokens", usage.OutputTokens),
+			zap.Int("output_bytes", outputBytes),
+		)
+	}
+
 	return &OpenAIForwardResult{
 		RequestID:                     requestID,
 		Usage:                         usage,
@@ -622,6 +642,7 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 	reasoningEffort *string,
 	serviceTier *string,
 	startTime time.Time,
+	requestBodyLen int,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
@@ -648,6 +669,20 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 		return nil, newGrokMissingUsageFailoverError(c, account, upstreamRequestID)
 	}
 	respBody = applyOllamaCloudRawChatCompletionsResponse(account, respBody)
+
+	// D: NVIDIA 免费 API 非流式响应同样可能缺 usage → 用请求/响应字节估算兜底。
+	// 仅在 extractOpenAIUsageFromJSONBytes 未解析出任何可计费 token 时触发，
+	// 上游已给的 cache/image 计费维度原样保留。
+	if isNVIDIAAccountByHostname(account) && openAIUsageIsEmpty(usage) {
+		usage = estimateOpenAIUsageFallback(requestBodyLen, len(respBody))
+		logger.L().Info("nvidia_usage_estimated",
+			zap.Int64("account_id", account.ID),
+			zap.String("request_id", requestID),
+			zap.Int("estimated_input_tokens", usage.InputTokens),
+			zap.Int("estimated_output_tokens", usage.OutputTokens),
+			zap.Int("output_bytes", len(respBody)),
+		)
+	}
 
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
