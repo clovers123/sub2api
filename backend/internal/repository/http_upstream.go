@@ -850,14 +850,11 @@ type nvidiaInferencePrewarmRequestBody struct {
 }
 
 // PrewarmNVIDIAInference 对指定代理发送最小推理请求：POST {baseURL}/v1/chat/completions，
-// 携带 Bearer apiKey 与指定 model，body 为单条 user 消息 + max_tokens=1。
-// 任何 HTTP 状态码（含 401/429）均视为成功，仅传输层错误返回 error。
-//
-// 实现 service.NVIDIAInferencePrewarmUpstream 接口。
-// PrewarmNVIDIAInference 对指定代理发送最小推理请求：POST {baseURL}/v1/chat/completions，
 // 携带 Bearer apiKey 与指定 model（最小载荷 max_tokens=1）。
 // 返回 Accepted（HTTP 2xx，模型已加载可复用）/ Rejected（HTTP 非 2xx 接单但不可复用）；
 // 仅传输层错误返回 non-nil error（此时 outcome 无意义）。
+//
+// 实现 service.NVIDIAInferencePrewarmUpstream 接口。
 func (s *httpUpstreamService) PrewarmNVIDIAInference(ctx context.Context, proxyURL string, baseURL string, apiKey string, model string) (service.NVIDIAInferencePrewarmOutcome, error) {
 	if ctx == nil {
 		ctx = context.Background()
