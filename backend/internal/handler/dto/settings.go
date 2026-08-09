@@ -348,6 +348,8 @@ type SystemSettings struct {
 	NVIDIAAdaptiveThrottleStateTTLMinutes   int  `json:"nvidia_adaptive_throttle_state_ttl_minutes"`
 	NVIDIAAdaptiveThrottleMaxSpacingSeconds int  `json:"nvidia_adaptive_throttle_max_spacing_seconds"`
 	NVIDIAAdaptiveThrottleShortWaitMs       int  `json:"nvidia_adaptive_throttle_short_wait_ms"`
+	NVIDIAAdaptiveThrottleMaxInflight       int  `json:"nvidia_adaptive_throttle_max_inflight"`
+	NVIDIAAdaptiveThrottleL1JitterMs        int  `json:"nvidia_adaptive_throttle_l1_jitter_ms"`
 
 	// NVIDIA 共享连接池（DB 持久化；UI 编辑需重启生效，"软重启" 仅新连接遵守新值）。
 	NVIDIASharedConnectionPoolEnabled              bool `json:"nvidia_shared_connection_pool_enabled"`
@@ -355,6 +357,9 @@ type SystemSettings struct {
 	NVIDIASharedConnectionPoolPrewarmEnabled      bool `json:"nvidia_shared_connection_pool_prewarm_enabled"`
 	NVIDIASharedConnectionPoolPrewarmIntervalSec   int  `json:"nvidia_shared_connection_pool_prewarm_interval_sec"`
 	NVIDIASharedConnectionPoolH2PingIdleTimeoutSec int  `json:"nvidia_shared_connection_pool_h2_ping_idle_timeout_sec"`
+	NVIDIASharedConnectionPoolInferencePrewarmEnabled     bool   `json:"nvidia_shared_connection_pool_inference_prewarm_enabled"`
+	NVIDIASharedConnectionPoolInferencePrewarmIntervalSec int    `json:"nvidia_shared_connection_pool_inference_prewarm_interval_sec"`
+	NVIDIASharedConnectionPoolInferencePrewarmModel       string `json:"nvidia_shared_connection_pool_inference_prewarm_model"`
 }
 
 type DefaultSubscriptionSetting struct {

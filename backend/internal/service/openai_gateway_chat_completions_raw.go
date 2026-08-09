@@ -197,11 +197,36 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		customUA = defaultGrokUpstreamUserAgent()
 	}
 	targetParsedURL, _ := url.Parse(targetURL)
-	resp, err := s.sendCCUpstreamRequest(ctx, c, account, targetURL, upstreamBody, clientStream, token, customUA, grokCacheIdentity, s.chatCompletionsHTTPUpstreamProfile(account, targetParsedURL))
+	profile := s.chatCompletionsHTTPUpstreamProfile(account, targetParsedURL)
+
+	// A1: NVIDIA 并发维度节流——真实转发前 acquire 并发槽位。
+	// 与 Responses 路径一致：仅对 NVIDIA 上游生效；失败时返回 429 由 handler 承接。
+	var releaseNVIDIAInflight func()
+	if s.rateLimitService != nil && profile == HTTPUpstreamProfileNVIDIA {
+		release, ok := s.rateLimitService.TryAcquireNVIDIAInflight(ctx, NVIDIAThrottleScope{
+			AccountID:      account.ID,
+			CanonicalModel: upstreamModel,
+		})
+		if !ok {
+			writeChatCompletionsError(c, http.StatusTooManyRequests, "rate_limit_error",
+				"NVIDIA upstream concurrency limit reached; retry shortly")
+			return nil, errNVIDIAInflightLimitReached
+		}
+		releaseNVIDIAInflight = release
+	}
+	resp, err := s.sendCCUpstreamRequest(ctx, c, account, targetURL, upstreamBody, clientStream, token, customUA, grokCacheIdentity, profile)
 	if err != nil {
+		if releaseNVIDIAInflight != nil {
+			releaseNVIDIAInflight()
+		}
 		return nil, err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		_ = resp.Body.Close()
+		if releaseNVIDIAInflight != nil {
+			releaseNVIDIAInflight()
+		}
+	}()
 
 	// 7. Handle error response with failover
 	if resp.StatusCode >= 400 {

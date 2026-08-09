@@ -101,6 +101,7 @@ func provideCleanup(
 	codexVersionSync *service.OpenAICodexVersionSyncService,
 	proxyExpiry *service.ProxyExpiryService,
 	nvidiaPrewarmer *service.NVIDIAConnectionPrewarmer,
+	nvidiaInferencePrewarmer *service.NVIDIAInferencePrewarmer,
 	subscriptionExpiry *service.SubscriptionExpiryService,
 	usageCleanup *service.UsageCleanupService,
 	idempotencyCleanup *service.IdempotencyCleanupService,
@@ -280,6 +281,12 @@ func provideCleanup(
 			{"NVIDIAConnectionPrewarmer", func() error {
 				if nvidiaPrewarmer != nil {
 					nvidiaPrewarmer.Stop()
+				}
+				return nil
+			}},
+			{"NVIDIAInferencePrewarmer", func() error {
+				if nvidiaInferencePrewarmer != nil {
+					nvidiaInferencePrewarmer.Stop()
 				}
 				return nil
 			}},

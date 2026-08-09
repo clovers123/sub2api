@@ -35,3 +35,21 @@ type NVIDIAConnectionPrewarmUpstream interface {
 	// 仅传输层错误返回 error。
 	PrewarmNVIDIAConnection(ctx context.Context, proxyURL string) error
 }
+
+// NVIDIAInferencePrewarmUpstream NVIDIA 上游真实推理预热能力接口。
+//
+// 独立于 NVIDIAConnectionPrewarmUpstream 定义（可选能力接口），避免所有
+// HTTPUpstream 测试桩都被迫实现该方法；repository 的 httpUpstreamService
+// 同时实现两个接口。
+//
+// 真实推理预热与连接预热（无凭据探测）互补：连接预热只完成 TCP+TLS+H2
+// 建连，而推理预热携带真实凭据发送一次最小推理请求（max_tokens=1），
+// 触发 NVIDIA 上游模型加载/保活，避免长时间空闲后首次真实请求遭遇
+// 模型冷启动超时。
+type NVIDIAInferencePrewarmUpstream interface {
+	// PrewarmNVIDIAInference 对指定代理发送一次 NVIDIA 最小推理请求：
+	// POST {baseURL}/v1/chat/completions，携带 Bearer apiKey 与指定 model，
+	// body 为最小载荷（单条 user 消息 + max_tokens=1）。
+	// 任何 HTTP 状态码（含 401/429）均视为成功，仅传输层错误返回 error。
+	PrewarmNVIDIAInference(ctx context.Context, proxyURL string, baseURL string, apiKey string, model string) error
+}

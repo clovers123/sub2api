@@ -1191,6 +1191,10 @@ const (
 	nvidiaAdaptiveThrottleMaxSpacingSecondsMax = 300
 	nvidiaAdaptiveThrottleShortWaitMsMin       = 0
 	nvidiaAdaptiveThrottleShortWaitMsMax       = 10000
+	nvidiaAdaptiveThrottleMaxInflightMin      = 0
+	nvidiaAdaptiveThrottleMaxInflightMax      = 512
+	nvidiaAdaptiveThrottleL1JitterMsMin       = 0
+	nvidiaAdaptiveThrottleL1JitterMsMax       = 30000
 )
 
 // NVIDIA 共享连接池边界常量。集中维护以便与前端 / 文档对齐。
@@ -1201,6 +1205,8 @@ const (
 	nvidiaSharedPoolPrewarmIntervalSecMax   = 86400
 	nvidiaSharedPoolH2PingIdleTimeoutSecMin = 0
 	nvidiaSharedPoolH2PingIdleTimeoutSecMax = 600
+	nvidiaSharedPoolInferencePrewarmIntervalSecMin = 0
+	nvidiaSharedPoolInferencePrewarmIntervalSecMax = 86400
 )
 
 // NVIDIA 连续 5xx 自动冷却边界常量（P1 方案）。
@@ -1235,6 +1241,8 @@ func (s *SettingService) GetNVIDIAAdaptiveThrottleSettings(ctx context.Context) 
 		SettingKeyNVIDIAAdaptiveThrottleStateTTLMinutes,
 		SettingKeyNVIDIAAdaptiveThrottleMaxSpacingSeconds,
 		SettingKeyNVIDIAAdaptiveThrottleShortWaitMs,
+		SettingKeyNVIDIAAdaptiveThrottleMaxInflight,
+		SettingKeyNVIDIAAdaptiveThrottleL1JitterMs,
 	})
 	if err != nil {
 		if errors.Is(err, ErrSettingNotFound) {
@@ -1244,15 +1252,18 @@ func (s *SettingService) GetNVIDIAAdaptiveThrottleSettings(ctx context.Context) 
 	}
 
 	result := &NVIDIAAdaptiveThrottleSettings{
-		Enabled:    def.Enabled,
-		StateTTL:   def.StateTTL,
-		MaxSpacing: def.MaxSpacing,
-		ShortWait:  def.ShortWait,
+		Enabled:     def.Enabled,
+		StateTTL:    def.StateTTL,
+		MaxSpacing:  def.MaxSpacing,
+		ShortWait:   def.ShortWait,
+		MaxInflight: def.MaxInflight,
+		L1Jitter:    def.L1Jitter,
 	}
 
-	// Enabled: 仅 "true" 算开启；其它任何值（含缺失 / 非法 / 空）回退 false。
-	if raw, ok := values[SettingKeyNVIDIAAdaptiveThrottleEnabled]; ok && strings.TrimSpace(raw) == "true" {
-		result.Enabled = true
+	// Enabled: key 存在时仅 "true" 算开启，其余任何值（"false"、空、非法）显式关闭；
+	// key 缺失时回退默认值（def.Enabled，默认 true）。
+	if raw, ok := values[SettingKeyNVIDIAAdaptiveThrottleEnabled]; ok {
+		result.Enabled = strings.TrimSpace(raw) == "true"
 	}
 
 	// StateTTL: 合法且在 [1,1440] 内则使用，否则保持默认 30 分钟。
@@ -1280,6 +1291,116 @@ func (s *SettingService) GetNVIDIAAdaptiveThrottleSettings(ctx context.Context) 
 			v <= nvidiaAdaptiveThrottleShortWaitMsMax {
 			result.ShortWait = time.Duration(v) * time.Millisecond
 		}
+	}
+
+	// MaxInflight: 合法且在 [0,512] 内则使用（0 表示关闭并发控制），否则回退默认 4。
+	if raw, ok := values[SettingKeyNVIDIAAdaptiveThrottleMaxInflight]; ok {
+		if v, parseErr := strconv.Atoi(strings.TrimSpace(raw)); parseErr == nil &&
+			v >= nvidiaAdaptiveThrottleMaxInflightMin &&
+			v <= nvidiaAdaptiveThrottleMaxInflightMax {
+			result.MaxInflight = v
+		}
+	}
+
+	// L1Jitter: 合法且在 [0,30000] 内则使用（0 表示关闭抖动），否则回退默认 4000ms。
+	if raw, ok := values[SettingKeyNVIDIAAdaptiveThrottleL1JitterMs]; ok {
+		if v, parseErr := strconv.Atoi(strings.TrimSpace(raw)); parseErr == nil &&
+			v >= nvidiaAdaptiveThrottleL1JitterMsMin &&
+			v <= nvidiaAdaptiveThrottleL1JitterMsMax {
+			result.L1Jitter = time.Duration(v) * time.Millisecond
+		}
+	}
+
+	return result, nil
+}
+
+// GetNVIDIASharedPoolSettings 读取 NVIDIA 共享连接池运行时配置（typed）。
+//
+// 实现要点与 GetNVIDIAAdaptiveThrottleSettings 相同：单次批量读、字段级
+// fallback、越界回退默认值。InferencePrewarm 三件套（Enabled/IntervalSec/Model）
+// 与共享池基础配置一并返回，供推理预热器装配。
+func (s *SettingService) GetNVIDIASharedPoolSettings(ctx context.Context) (*NVIDIASharedPoolSettings, error) {
+	def := DefaultNVIDIASharedPoolSettings()
+	if s == nil || s.settingRepo == nil {
+		return def, nil
+	}
+
+	values, err := s.settingRepo.GetMultiple(ctx, []string{
+		SettingKeyNVIDIASharedConnectionPoolEnabled,
+		SettingKeyNVIDIASharedConnectionPoolIdleConnTimeoutSec,
+		SettingKeyNVIDIASharedConnectionPoolPrewarmEnabled,
+		SettingKeyNVIDIASharedConnectionPoolPrewarmIntervalSec,
+		SettingKeyNVIDIASharedConnectionPoolH2PingIdleTimeoutSec,
+		SettingKeyNVIDIASharedConnectionPoolInferencePrewarmEnabled,
+		SettingKeyNVIDIASharedConnectionPoolInferencePrewarmIntervalSec,
+		SettingKeyNVIDIASharedConnectionPoolInferencePrewarmModel,
+	})
+	if err != nil {
+		if errors.Is(err, ErrSettingNotFound) {
+			return def, nil
+		}
+		return def, fmt.Errorf("get nvidia shared pool settings: %w", err)
+	}
+
+	result := &NVIDIASharedPoolSettings{
+		Enabled:                      def.Enabled,
+		IdleConnTimeoutSec:           def.IdleConnTimeoutSec,
+		PrewarmEnabled:               def.PrewarmEnabled,
+		PrewarmIntervalSec:           def.PrewarmIntervalSec,
+		H2PingIdleTimeoutSec:         def.H2PingIdleTimeoutSec,
+		InferencePrewarmEnabled:      def.InferencePrewarmEnabled,
+		InferencePrewarmIntervalSec:  def.InferencePrewarmIntervalSec,
+		InferencePrewarmModel:        def.InferencePrewarmModel,
+	}
+
+	if raw, ok := values[SettingKeyNVIDIASharedConnectionPoolEnabled]; ok && strings.TrimSpace(raw) == "true" {
+		result.Enabled = true
+	}
+	if raw, ok := values[SettingKeyNVIDIASharedConnectionPoolEnabled]; ok && strings.TrimSpace(raw) == "false" {
+		result.Enabled = false
+	}
+	if raw, ok := values[SettingKeyNVIDIASharedConnectionPoolIdleConnTimeoutSec]; ok {
+		if v, parseErr := strconv.Atoi(strings.TrimSpace(raw)); parseErr == nil &&
+			v >= nvidiaSharedPoolIdleConnTimeoutSecMin &&
+			v <= nvidiaSharedPoolIdleConnTimeoutSecMax {
+			result.IdleConnTimeoutSec = v
+		}
+	}
+	if raw, ok := values[SettingKeyNVIDIASharedConnectionPoolPrewarmEnabled]; ok && strings.TrimSpace(raw) == "true" {
+		result.PrewarmEnabled = true
+	}
+	if raw, ok := values[SettingKeyNVIDIASharedConnectionPoolPrewarmEnabled]; ok && strings.TrimSpace(raw) == "false" {
+		result.PrewarmEnabled = false
+	}
+	if raw, ok := values[SettingKeyNVIDIASharedConnectionPoolPrewarmIntervalSec]; ok {
+		if v, parseErr := strconv.Atoi(strings.TrimSpace(raw)); parseErr == nil &&
+			v >= nvidiaSharedPoolPrewarmIntervalSecMin &&
+			v <= nvidiaSharedPoolPrewarmIntervalSecMax {
+			result.PrewarmIntervalSec = v
+		}
+	}
+	if raw, ok := values[SettingKeyNVIDIASharedConnectionPoolH2PingIdleTimeoutSec]; ok {
+		if v, parseErr := strconv.Atoi(strings.TrimSpace(raw)); parseErr == nil &&
+			v >= nvidiaSharedPoolH2PingIdleTimeoutSecMin &&
+			v <= nvidiaSharedPoolH2PingIdleTimeoutSecMax {
+			result.H2PingIdleTimeoutSec = v
+		}
+	}
+	if raw, ok := values[SettingKeyNVIDIASharedConnectionPoolInferencePrewarmEnabled]; ok && strings.TrimSpace(raw) == "true" {
+		result.InferencePrewarmEnabled = true
+	}
+	if raw, ok := values[SettingKeyNVIDIASharedConnectionPoolInferencePrewarmEnabled]; ok && strings.TrimSpace(raw) == "false" {
+		result.InferencePrewarmEnabled = false
+	}
+	if raw, ok := values[SettingKeyNVIDIASharedConnectionPoolInferencePrewarmIntervalSec]; ok {
+		if v, parseErr := strconv.Atoi(strings.TrimSpace(raw)); parseErr == nil &&
+			v >= nvidiaSharedPoolInferencePrewarmIntervalSecMin &&
+			v <= nvidiaSharedPoolInferencePrewarmIntervalSecMax {
+			result.InferencePrewarmIntervalSec = v
+		}
+	}
+	if raw, ok := values[SettingKeyNVIDIASharedConnectionPoolInferencePrewarmModel]; ok {
+		result.InferencePrewarmModel = strings.TrimSpace(raw)
 	}
 
 	return result, nil

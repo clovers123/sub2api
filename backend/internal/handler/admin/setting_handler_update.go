@@ -385,6 +385,8 @@ type UpdateSettingsRequest struct {
 	NVIDIAAdaptiveThrottleStateTTLMinutes   *int  `json:"nvidia_adaptive_throttle_state_ttl_minutes"`
 	NVIDIAAdaptiveThrottleMaxSpacingSeconds *int `json:"nvidia_adaptive_throttle_max_spacing_seconds"`
 	NVIDIAAdaptiveThrottleShortWaitMs       *int  `json:"nvidia_adaptive_throttle_short_wait_ms"`
+	NVIDIAAdaptiveThrottleMaxInflight       *int  `json:"nvidia_adaptive_throttle_max_inflight"`
+	NVIDIAAdaptiveThrottleL1JitterMs        *int  `json:"nvidia_adaptive_throttle_l1_jitter_ms"`
 
 	// NVIDIA 共享连接池：指针类型表示省略则保持前值。需重启生效。
 	NVIDIASharedConnectionPoolEnabled              *bool `json:"nvidia_shared_connection_pool_enabled"`
@@ -392,6 +394,9 @@ type UpdateSettingsRequest struct {
 	NVIDIASharedConnectionPoolPrewarmEnabled        *bool `json:"nvidia_shared_connection_pool_prewarm_enabled"`
 	NVIDIASharedConnectionPoolPrewarmIntervalSec    *int  `json:"nvidia_shared_connection_pool_prewarm_interval_sec"`
 	NVIDIASharedConnectionPoolH2PingIdleTimeoutSec  *int  `json:"nvidia_shared_connection_pool_h2_ping_idle_timeout_sec"`
+	NVIDIASharedConnectionPoolInferencePrewarmEnabled     *bool   `json:"nvidia_shared_connection_pool_inference_prewarm_enabled"`
+	NVIDIASharedConnectionPoolInferencePrewarmIntervalSec *int    `json:"nvidia_shared_connection_pool_inference_prewarm_interval_sec"`
+	NVIDIASharedConnectionPoolInferencePrewarmModel       *string `json:"nvidia_shared_connection_pool_inference_prewarm_model"`
 }
 
 // UpdateSettings 更新系统设置
@@ -1690,6 +1695,18 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.NVIDIAAdaptiveThrottleShortWaitMs
 		}(),
+		NVIDIAAdaptiveThrottleMaxInflight: func() int {
+			if req.NVIDIAAdaptiveThrottleMaxInflight != nil {
+				return *req.NVIDIAAdaptiveThrottleMaxInflight
+			}
+			return previousSettings.NVIDIAAdaptiveThrottleMaxInflight
+		}(),
+		NVIDIAAdaptiveThrottleL1JitterMs: func() int {
+			if req.NVIDIAAdaptiveThrottleL1JitterMs != nil {
+				return *req.NVIDIAAdaptiveThrottleL1JitterMs
+			}
+			return previousSettings.NVIDIAAdaptiveThrottleL1JitterMs
+		}(),
 		NVIDIASharedConnectionPoolEnabled: func() bool {
 			if req.NVIDIASharedConnectionPoolEnabled != nil {
 				return *req.NVIDIASharedConnectionPoolEnabled
@@ -1719,6 +1736,24 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 				return *req.NVIDIASharedConnectionPoolH2PingIdleTimeoutSec
 			}
 			return previousSettings.NVIDIASharedConnectionPoolH2PingIdleTimeoutSec
+		}(),
+		NVIDIASharedConnectionPoolInferencePrewarmEnabled: func() bool {
+			if req.NVIDIASharedConnectionPoolInferencePrewarmEnabled != nil {
+				return *req.NVIDIASharedConnectionPoolInferencePrewarmEnabled
+			}
+			return previousSettings.NVIDIASharedConnectionPoolInferencePrewarmEnabled
+		}(),
+		NVIDIASharedConnectionPoolInferencePrewarmIntervalSec: func() int {
+			if req.NVIDIASharedConnectionPoolInferencePrewarmIntervalSec != nil {
+				return *req.NVIDIASharedConnectionPoolInferencePrewarmIntervalSec
+			}
+			return previousSettings.NVIDIASharedConnectionPoolInferencePrewarmIntervalSec
+		}(),
+		NVIDIASharedConnectionPoolInferencePrewarmModel: func() string {
+			if req.NVIDIASharedConnectionPoolInferencePrewarmModel != nil {
+				return *req.NVIDIASharedConnectionPoolInferencePrewarmModel
+			}
+			return previousSettings.NVIDIASharedConnectionPoolInferencePrewarmModel
 		}(),
 		OpsMonitoringEnabled: func() bool {
 			if req.OpsMonitoringEnabled != nil {

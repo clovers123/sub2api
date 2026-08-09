@@ -396,12 +396,17 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		NVIDIAAdaptiveThrottleStateTTLMinutes:   settings.NVIDIAAdaptiveThrottleStateTTLMinutes,
 		NVIDIAAdaptiveThrottleMaxSpacingSeconds: settings.NVIDIAAdaptiveThrottleMaxSpacingSeconds,
 		NVIDIAAdaptiveThrottleShortWaitMs:       settings.NVIDIAAdaptiveThrottleShortWaitMs,
+		NVIDIAAdaptiveThrottleMaxInflight:       settings.NVIDIAAdaptiveThrottleMaxInflight,
+		NVIDIAAdaptiveThrottleL1JitterMs:        settings.NVIDIAAdaptiveThrottleL1JitterMs,
 
-		NVIDIASharedConnectionPoolEnabled:              settings.NVIDIASharedConnectionPoolEnabled,
-		NVIDIASharedConnectionPoolIdleConnTimeoutSec:    settings.NVIDIASharedConnectionPoolIdleConnTimeoutSec,
-		NVIDIASharedConnectionPoolPrewarmEnabled:        settings.NVIDIASharedConnectionPoolPrewarmEnabled,
-		NVIDIASharedConnectionPoolPrewarmIntervalSec:     settings.NVIDIASharedConnectionPoolPrewarmIntervalSec,
-		NVIDIASharedConnectionPoolH2PingIdleTimeoutSec:   settings.NVIDIASharedConnectionPoolH2PingIdleTimeoutSec,
+		NVIDIASharedConnectionPoolEnabled:                     settings.NVIDIASharedConnectionPoolEnabled,
+		NVIDIASharedConnectionPoolIdleConnTimeoutSec:           settings.NVIDIASharedConnectionPoolIdleConnTimeoutSec,
+		NVIDIASharedConnectionPoolPrewarmEnabled:               settings.NVIDIASharedConnectionPoolPrewarmEnabled,
+		NVIDIASharedConnectionPoolPrewarmIntervalSec:            settings.NVIDIASharedConnectionPoolPrewarmIntervalSec,
+		NVIDIASharedConnectionPoolH2PingIdleTimeoutSec:          settings.NVIDIASharedConnectionPoolH2PingIdleTimeoutSec,
+		NVIDIASharedConnectionPoolInferencePrewarmEnabled:      settings.NVIDIASharedConnectionPoolInferencePrewarmEnabled,
+		NVIDIASharedConnectionPoolInferencePrewarmIntervalSec:  settings.NVIDIASharedConnectionPoolInferencePrewarmIntervalSec,
+		NVIDIASharedConnectionPoolInferencePrewarmModel:        settings.NVIDIASharedConnectionPoolInferencePrewarmModel,
 	}
 
 	// OpenAI fast policy (stored under a dedicated setting key)

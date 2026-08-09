@@ -28,7 +28,7 @@ func TestNvidiaThrottleL1_MarkBlockedThenIsBlocked(t *testing.T) {
 	require.NotNil(t, l1)
 
 	// ristretto Set 是异步, 调用 Wait 确保命中
-	l1.MarkBlocked(1001, "deepseek-ai/deepseek-v4-pro")
+	l1.MarkBlocked(1001, "deepseek-ai/deepseek-v4-pro", 0)
 	l1.cache.Wait()
 
 	// 写入后立即命中
@@ -45,7 +45,7 @@ func TestNvidiaThrottleL1_TTLExpires(t *testing.T) {
 	l1 := newNvidiaThrottleL1()
 	require.NotNil(t, l1)
 
-	l1.MarkBlocked(2002, "stepfun-ai/step-3.7-flash")
+	l1.MarkBlocked(2002, "stepfun-ai/step-3.7-flash", 0)
 	l1.cache.Wait()
 	require.True(t, l1.IsBlocked(2002, "stepfun-ai/step-3.7-flash"))
 
@@ -59,7 +59,7 @@ func TestNvidiaThrottleL1_ReserveShortCircuit(t *testing.T) {
 	// L1 命中 → Reserve 直接返回 blocked, 不调 L2 (此处 L2 nil, 调用必崩所以证明没调)
 	l1 := newNvidiaThrottleL1()
 	require.NotNil(t, l1)
-	l1.MarkBlocked(3003, "nvidia/nemotron-3-ultra-550b-a55b")
+	l1.MarkBlocked(3003, "nvidia/nemotron-3-ultra-550b-a55b", 0)
 	l1.cache.Wait()
 
 	svc := &RateLimitService{
@@ -175,4 +175,47 @@ func (f *fakeNoOpNvidiaCache) Reserve(_ context.Context, _ int64, _ string) (Nvi
 }
 func (f *fakeNoOpNvidiaCache) Apply(_ context.Context, _ int64, _ string, _ NvidiaThrottleRate) error {
 	return nil
+}
+
+func TestNvidiaThrottleL1_JitteredTTLZeroOrNegativeJitter(t *testing.T) {
+	l1 := newNvidiaThrottleL1()
+	require.NotNil(t, l1)
+	require.Equal(t, nvidiaThrottleL1TTL, l1.jitteredTTL(0), "jitter=0 关闭抖动, TTL 固定基数")
+	require.Equal(t, nvidiaThrottleL1TTL, l1.jitteredTTL(-time.Second), "负 jitter 按 0 处理")
+
+	var nilL1 *nvidiaThrottleL1
+	require.Equal(t, nvidiaThrottleL1TTL, nilL1.jitteredTTL(4*time.Second), "nil L1 返回基数 TTL")
+}
+
+func TestNvidiaThrottleL1_JitteredTTLInjectedJitterFn(t *testing.T) {
+	l1 := &nvidiaThrottleL1{jitterFn: func(max time.Duration) time.Duration { return max / 2 }}
+	require.Equal(t, nvidiaThrottleL1TTL+2*time.Second, l1.jitteredTTL(4*time.Second),
+		"注入 jitterFn 返回值叠加在基数上")
+}
+
+func TestNvidiaThrottleL1_JitteredTTLBoundedByWindow(t *testing.T) {
+	// 默认 math/rand/v2: 多次采样都落在 [基数, 基数+窗口) 内, 不越过窗口
+	l1 := newNvidiaThrottleL1()
+	require.NotNil(t, l1)
+	window := 4 * time.Second
+	for i := 0; i < 50; i++ {
+		ttl := l1.jitteredTTL(window)
+		require.GreaterOrEqual(t, ttl, nvidiaThrottleL1TTL, "TTL 不能小于基数")
+		require.Less(t, ttl, nvidiaThrottleL1TTL+window, "TTL 不能越过基数+抖动窗口")
+	}
+}
+
+func TestNvidiaThrottleL1_JitterBreaksSynchronizedWakeup(t *testing.T) {
+	// B3: 同一时刻被 block 的多个 scope, TTL 必须错开.
+	// 注入固定序列模拟两个不同 scope: 若 TTL 相同, 8s 后齐醒 → 第二轮 429 风暴.
+	seq := []time.Duration{100 * time.Millisecond, 3 * time.Second}
+	idx := 0
+	l1 := &nvidiaThrottleL1{jitterFn: func(time.Duration) time.Duration {
+		v := seq[idx%len(seq)]
+		idx++
+		return v
+	}}
+	ttl1 := l1.jitteredTTL(4 * time.Second)
+	ttl2 := l1.jitteredTTL(4 * time.Second)
+	require.NotEqual(t, ttl1, ttl2, "同批 block 的 TTL 应不同, 破坏同步苏醒")
 }

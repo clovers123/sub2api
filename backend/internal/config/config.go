@@ -2505,6 +2505,7 @@ func setDefaults() {
 	// 非正 idle_conn_timeout_seconds 只回退到 gateway.idle_conn_timeout_seconds。
   viper.SetDefault("gateway.nvidia_shared_connection_pool.enabled", true)
   viper.SetDefault("gateway.nvidia_shared_connection_pool.idle_conn_timeout_seconds", 600)
+  viper.SetDefault("gateway.nvidia_shared_connection_pool.h2_ping_idle_timeout_seconds", 0)
   // NVIDIA 上游连接预热：默认启动一次预热 + 周期保活；间隔 0 表示仅启动时预热一次。
   viper.SetDefault("gateway.nvidia_shared_connection_pool.prewarm_enabled", true)
   viper.SetDefault("gateway.nvidia_shared_connection_pool.prewarm_interval_seconds", 240)

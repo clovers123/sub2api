@@ -766,7 +766,20 @@ const (
 	nvidiaPrewarmTimeout = 10 * time.Second
 	// nvidiaPrewarmBodyDrainLimit: 预热响应体最大读取字节数（读尽后连接才能回空闲池复用）
 	nvidiaPrewarmBodyDrainLimit = 64 << 10
+	// nvidiaInferencePrewarmMaxTokens: 推理预热请求的 max_tokens（最小推理载荷）
+	nvidiaInferencePrewarmMaxTokens = 1
 )
+
+// loopback 主机（localhost / 127.0.0.1 / ::1）允许 http 用于本地测试。
+func isLoopbackHost(host string) bool {
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
 
 // NVIDIA stale socket 探活相关常量（N1）
 const (
@@ -821,6 +834,78 @@ func (s *httpUpstreamService) prewarmNVIDIAConnectionToBase(ctx context.Context,
 	// 读尽并关闭响应体，让底层连接回到空闲池以便后续请求复用。
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, nvidiaPrewarmBodyDrainLimit))
 	_ = resp.Body.Close()
+	return nil
+}
+
+// nvidiaInferencePrewarmMessage 推理预热请求的单条消息。
+type nvidiaInferencePrewarmMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// nvidiaInferencePrewarmRequestBody 最小推理预热请求体。
+type nvidiaInferencePrewarmRequestBody struct {
+	Model     string                          `json:"model"`
+	Messages  []nvidiaInferencePrewarmMessage `json:"messages"`
+	MaxTokens int                             `json:"max_tokens"`
+}
+
+// PrewarmNVIDIAInference 对指定代理发送最小推理请求：POST {baseURL}/v1/chat/completions，
+// 携带 Bearer apiKey 与指定 model，body 为单条 user 消息 + max_tokens=1。
+// 任何 HTTP 状态码（含 401/429）均视为成功，仅传输层错误返回 error。
+//
+// 实现 service.NVIDIAInferencePrewarmUpstream 接口。
+func (s *httpUpstreamService) PrewarmNVIDIAInference(ctx context.Context, proxyURL string, baseURL string, apiKey string, model string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, nvidiaPrewarmTimeout)
+	defer cancel()
+
+	base := strings.TrimRight(baseURL, "/")
+	if !strings.HasSuffix(base, "/v1") {
+		base += "/v1"
+	}
+	target, err := url.Parse(base + "/chat/completions")
+	if err != nil {
+		return fmt.Errorf("nvidia inference prewarm: parse target url: %w", err)
+	}
+	if target.Scheme != "https" && !isLoopbackHost(target.Hostname()) {
+		return fmt.Errorf("nvidia inference prewarm: insecure base url scheme %q for host %q", target.Scheme, target.Hostname())
+	}
+
+	// markInFlight=false：预热不占用进行中请求计数；
+	// enforceLimit=false：预热不因缓存上限被拒绝（复用已有条目为主）。
+	entry, err := s.getClientEntry(proxyURL, 0, 0, service.HTTPUpstreamProfileNVIDIA, false, false, target)
+	if err != nil {
+		return fmt.Errorf("nvidia inference prewarm: get client: %w", err)
+	}
+
+	body, err := json.Marshal(nvidiaInferencePrewarmRequestBody{
+		Model: model,
+		Messages: []nvidiaInferencePrewarmMessage{
+			{Role: "user", Content: "ping"},
+		},
+		MaxTokens: nvidiaInferencePrewarmMaxTokens,
+	})
+	if err != nil {
+		return fmt.Errorf("nvidia inference prewarm: marshal body: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("nvidia inference prewarm: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	resp, err := entry.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("nvidia inference prewarm: transport error: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, nvidiaPrewarmBodyDrainLimit))
 	return nil
 }
 

@@ -73,7 +73,8 @@ func (s *RateLimitService) ReserveNVIDIAAdaptiveThrottle(ctx context.Context, re
 	if s.nvidiaThrottleL1 != nil && s.nvidiaThrottleL1.IsBlocked(request.Scope.AccountID, request.Scope.CanonicalModel) {
 		s.nvidiaMetrics.Reserves.Add(1)
 		s.nvidiaMetrics.Blocked.Add(1)
-		retryAfter := nvidiaThrottleL1TTL
+		// B3: L1 命中时返回的 RetryAfter 同样叠加抖动, 避免客户端同步重试风暴.
+		retryAfter := s.nvidiaThrottleL1.jitteredTTL(s.nvidiaAdaptiveThrottleL1Jitter(ctx))
 		return NvidiaReserveResult{
 			Allowed:      false,
 			RetryAfterMs: retryAfter.Milliseconds(),
@@ -93,7 +94,7 @@ func (s *RateLimitService) ReserveNVIDIAAdaptiveThrottle(ctx context.Context, re
 	s.nvidiaMetrics.Blocked.Add(1)
 	// L2 判定 blocked: 回填 L1, 下次同账号同 model 直接命中 L1.
 	if s.nvidiaThrottleL1 != nil {
-		s.nvidiaThrottleL1.MarkBlocked(request.Scope.AccountID, request.Scope.CanonicalModel)
+		s.nvidiaThrottleL1.MarkBlocked(request.Scope.AccountID, request.Scope.CanonicalModel, s.nvidiaAdaptiveThrottleL1Jitter(ctx))
 	}
 	retryAfter := time.Duration(result.RetryAfterMs) * time.Millisecond
 	return NvidiaReserveResult{
@@ -121,7 +122,7 @@ func (s *RateLimitService) RecordNVIDIAAdaptiveThrottleOutcome(ctx context.Conte
 	}
 	// N3: Rate / Capacity 信号 → 同步写 L1, 后续 8s 内同 scope 直接 block 不查 L2.
 	if s.nvidiaThrottleL1 != nil && (signal == nvidiaThrottleSignalRate || signal == nvidiaThrottleSignalCapacity) {
-		s.nvidiaThrottleL1.MarkBlocked(update.Scope.AccountID, update.Scope.CanonicalModel)
+		s.nvidiaThrottleL1.MarkBlocked(update.Scope.AccountID, update.Scope.CanonicalModel, s.nvidiaAdaptiveThrottleL1Jitter(ctx))
 	}
 	s.ensureNVIDIAAdaptiveThrottleRuntime()
 	s.nvidiaMetrics.Outcomes.Add(1)
@@ -193,6 +194,9 @@ func (s *RateLimitService) ensureNVIDIAAdaptiveThrottleRuntime() {
 	}
 	if s.nvidiaThrottleJitter == nil {
 		s.nvidiaThrottleJitter = defaultNVIDIAAdaptiveThrottleJitter
+	}
+	if s.nvidiaInflight == nil {
+		s.nvidiaInflight = newNVIDIAInflightTracker()
 	}
 }
 

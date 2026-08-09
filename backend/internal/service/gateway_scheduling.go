@@ -2794,6 +2794,14 @@ func (t *nvidiaThrottleSelection) blockedError(ctx context.Context) *NVIDIAAdapt
 // gate is local-only and never short-circuits on its own.
 func (t *nvidiaThrottleSelection) gateAccount(ctx context.Context, account *Account) (bool, time.Duration, *NVIDIAAdaptiveThrottleBlockedError) {
 	gated, retry := t.reserve(ctx, account)
+	if !gated && t.svc != nil && t.svc.rateLimitService != nil {
+		// A1: 并发维度预 gate——该 scope 并发槽位已满则跳过该账号，
+		// 避免把新请求压进已饱和的 NVIDIA 上游加剧 429 风暴。
+		if t.svc.rateLimitService.nvidiaInflightFull(ctx, NVIDIAThrottleScope{AccountID: account.ID, CanonicalModel: t.model}) {
+			t.gatedCount++
+			return true, 0, nil
+		}
+	}
 	return gated, retry, nil
 }
 
