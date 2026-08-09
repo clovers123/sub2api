@@ -44,11 +44,12 @@ type NVIDIAInferencePrewarmer struct {
 	// blockChecker 跳过封锁中账号的预热；nil 容忍（行为与旧版一致）。
 	blockChecker nvidiaPrewarmBlockChecker
 
-	stopCh    chan struct{}
-	stopOnce  sync.Once
-	startOnce sync.Once
-	stopped   atomic.Bool
-	wg        sync.WaitGroup
+	stopCh      chan struct{}
+	stopOnce    sync.Once
+	startOnce   sync.Once
+	lifecycleMu sync.Mutex
+	stopped     atomic.Bool
+	wg          sync.WaitGroup
 
 	mu       sync.Mutex
 	snapshot NVIDIAInferencePrewarmerSnapshot
@@ -87,10 +88,14 @@ func NewNVIDIAInferencePrewarmer(
 
 // Start 启动预热器：立即执行一轮预热，interval > 0 时另起后台保活循环。
 // 未启用或依赖缺失时，或者已启动 / 已停止后，均为 no-op。
+// lifecycleMu 串行化 Start/Stop：避免 TOCTOU——Start 检查 stopped 与 wg.Add(1)
+// 之间 Stop 完成（含 wg.Wait），导致 Stop 返回后 goroutine 才启动。
 func (p *NVIDIAInferencePrewarmer) Start() {
 	if p == nil || !p.enabled || p.upstream == nil || p.accountRepo == nil {
 		return
 	}
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
 	p.startOnce.Do(func() {
 		if p.stopped.Load() {
 			return
@@ -121,6 +126,8 @@ func (p *NVIDIAInferencePrewarmer) Stop() {
 	if p == nil {
 		return
 	}
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
 	p.stopOnce.Do(func() {
 		p.stopped.Store(true)
 		close(p.stopCh)
@@ -142,7 +149,6 @@ func (p *NVIDIAInferencePrewarmer) Snapshot() NVIDIAInferencePrewarmerSnapshot {
 // 上下文由 stopCh 驱动：Stop 时立即取消本轮所有在途预热请求。
 func (p *NVIDIAInferencePrewarmer) runOnce() {
 	stopCtx, stopCancel := context.WithCancel(context.Background())
-	defer stopCancel()
 	watcherDone := make(chan struct{})
 	go func() {
 		defer close(watcherDone)
@@ -152,7 +158,10 @@ func (p *NVIDIAInferencePrewarmer) runOnce() {
 		case <-stopCtx.Done():
 		}
 	}()
-	defer func() { <-watcherDone }()
+	defer func() {
+		stopCancel()
+		<-watcherDone
+	}()
 	ctx, cancel := context.WithTimeout(stopCtx, nvidiaPrewarmRoundTimeout)
 	defer cancel()
 
