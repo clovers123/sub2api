@@ -850,8 +850,10 @@ func TestStreamRawChatCompletions_NVIDIAMissingUsageEstimated(t *testing.T) {
 	require.Greater(t, result.Usage.InputTokens, 0, "NVIDIA streaming missing usage must get estimated input tokens")
 	require.Greater(t, result.Usage.OutputTokens, 0, "NVIDIA streaming missing usage must get estimated output tokens")
 
-	// 估算比例 = 字节数 / 4：请求体 75 字节 → 估算 input ≈ 18；响应 data payload 累计 → 按行累计 / 4。
+	// 估算比例 = 实际输出字段字节 / 4：delta.content "Hello" + " World" = 11 字节 → 估算 2
+	// （B3：不再计入 id/object/model/choices JSON envelope 与 usage-only chunk）。
 	require.Equal(t, len(body)/4, result.Usage.InputTokens)
+	require.Equal(t, 11/4, result.Usage.OutputTokens, "streaming estimate must count only delta.content bytes")
 }
 
 // TestBufferRawChatCompletions_NVIDIAMissingUsageEstimated 验证 D 接入点 2：
@@ -876,7 +878,37 @@ func TestBufferRawChatCompletions_NVIDIAMissingUsageEstimated(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, 60/4, result.Usage.InputTokens, "buffered NVIDIA usage fallback estimates input from request body bytes")
-	require.Equal(t, len(respBody)/4, result.Usage.OutputTokens, "buffered NVIDIA usage fallback estimates output from response body bytes")
+	// B3：输出估算只计 message.content 实际文本字节（"Hello from upstream" = 18 字节），
+	// 不再用整个 JSON body 长度。
+	require.Equal(t, 18/4, result.Usage.OutputTokens, "buffered NVIDIA usage fallback estimates output from message.content bytes only")
+}
+
+func TestExtractCCStreamOutputBytes_CountsContentOnly(t *testing.T) {
+	require.Equal(t, 5, extractCCStreamOutputBytes(`{"id":"x","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"Hello"}}]}`))
+	require.Equal(t, 5+6, extractCCStreamOutputBytes(`{"id":"x","choices":[{"index":0,"delta":{"content":"Hello"}},{"index":1,"delta":{"content":" World"}}]}`),
+		"multiple choices accumulate")
+	require.Equal(t, 0, extractCCStreamOutputBytes(`{"id":"x","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`),
+		"empty delta contributes nothing")
+	require.Equal(t, 0, extractCCStreamOutputBytes(`{"id":"x","usage":{"prompt_tokens":5,"completion_tokens":3}}`),
+		"usage-only chunk contributes nothing")
+	require.Equal(t, 0, extractCCStreamOutputBytes(`{"id":"x","choices":[]}`), "no choices contributes nothing")
+	require.Equal(t, 0, extractCCStreamOutputBytes(""), "empty payload contributes nothing")
+	require.Equal(t, len("reasoning text"), extractCCStreamOutputBytes(`{"id":"x","choices":[{"index":0,"delta":{"reasoning_content":"reasoning text"}}]}`),
+		"reasoning_content is counted as output")
+}
+
+func TestExtractCCNonStreamOutputBytes_CountsMessageContentOnly(t *testing.T) {
+	body := `{"id":"chatcmpl","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"Hello upstream"},"finish_reason":"stop"}]}`
+	require.Equal(t, len("Hello upstream"), extractCCNonStreamOutputBytes([]byte(body)), "non-stream output = message.content bytes")
+
+	reasoning := `{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"","reasoning_content":"think step"}}]}`
+	require.Equal(t, len("think step"), extractCCNonStreamOutputBytes([]byte(reasoning)), "reasoning_content counted when content empty")
+
+	noContent := `{"id":"x","choices":[{"index":0,"message":{"role":"assistant"},"finish_reason":"stop"}]}`
+	require.Equal(t, 0, extractCCNonStreamOutputBytes([]byte(noContent)), "no content contributes nothing")
+
+	require.Equal(t, 0, extractCCNonStreamOutputBytes([]byte(`{"id":"x"}`)), "no choices contributes nothing")
+	require.Equal(t, 0, extractCCNonStreamOutputBytes(nil), "nil body contributes nothing")
 }
 
 // TestBufferRawChatCompletions_NonNVIDIAKeepsEmptyUsage 验证兜底仅对 NVIDIA 账号生效：
