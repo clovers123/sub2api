@@ -98,6 +98,59 @@ func waitForRounds(t *testing.T, p *NVIDIAInferencePrewarmer, want int64) {
 	require.FailNow(t, "prewarmer rounds not reached")
 }
 
+// TestNVIDIAInferencePrewarmer_PeriodicIntervalRunsMultipleRounds 回归死锁:
+// runOnce 的 defer 顺序若先等 watcherDone 再 stopCancel，正常完成路径会永久阻塞
+// （stopCtx 未取消、stopCh 未关闭，watcher 永不退出），periodic 预热第一轮后卡死。
+// interval=1s 下应能观察到第二轮（Rounds>=2 且 upstream 至少 2 次调用）。
+func TestNVIDIAInferencePrewarmer_PeriodicIntervalRunsMultipleRounds(t *testing.T) {
+	upstream := &fakeInferencePrewarmUpstream{}
+	account := nvidiaInferencePrewarmTestAccount(1, "https://integrate.api.nvidia.com/v1", "key-1", map[string]any{
+		"user-model": "nvidia/model-a",
+	})
+	repo := &fakeInferencePrewarmAccountRepo{accounts: []Account{account}}
+
+	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 1, "", nil, nil)
+	p.Start()
+	defer p.Stop()
+
+	// 第一轮（启动即执行）+ 第二轮（ticker 1s 后）必须在 3s 内到达。
+	waitForRounds(t, p, 2)
+	require.GreaterOrEqual(t, upstream.count(), 2, "periodic prewarm must run more than one round")
+}
+
+// TestNVIDIAInferencePrewarmer_ConcurrentStartStopSerialized 回归 Start/Stop TOCTOU:
+// Start 检查 stopped==false 与 wg.Add(1) 之间若 Stop 完成（含 wg.Wait），
+// 会导致 Stop 返回后 goroutine 才启动。lifecycleMu 串行化后并发调用不得 panic，
+// 且 Stop 返回后不得再有新增预热调用。
+func TestNVIDIAInferencePrewarmer_ConcurrentStartStopSerialized(t *testing.T) {
+	upstream := &fakeInferencePrewarmUpstream{}
+	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{
+		"base_url": "https://integrate.api.nvidia.com/v1", "api_key": "key-1",
+		"model_mapping": map[string]any{"user-model": "nvidia/model-a"},
+	}}
+	repo := &fakeInferencePrewarmAccountRepo{accounts: []Account{*account}}
+
+	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "", nil, nil)
+	// 交替并发 Start/Stop：若存在 WaitGroup 并发 Add/Wait 竞态，-race 会捕获。
+	for i := 0; i < 5; i++ {
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			p.Start()
+		}()
+		go func() {
+			defer wg.Done()
+			p.Stop()
+		}()
+		wg.Wait()
+	}
+	// Stop 已返回：等一小段确认没有 goroutine latently 启动新轮次。
+	before := upstream.count()
+	time.Sleep(100 * time.Millisecond)
+	require.Equal(t, before, upstream.count(), "no new prewarm calls may appear after Stop returns")
+}
+
 func TestNVIDIAInferencePrewarmer_OneShotRoundsFiresForEachNVIDIAAccount(t *testing.T) {
 	upstream := &fakeInferencePrewarmUpstream{}
 	account := nvidiaInferencePrewarmTestAccount(1, "https://integrate.api.nvidia.com/v1", "key-1", map[string]any{
