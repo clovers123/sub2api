@@ -14,9 +14,11 @@ import (
 
 // fakeInferencePrewarmUpstream 记录调用参数的推理预热桩。
 type fakeInferencePrewarmUpstream struct {
-	mu       sync.Mutex
-	calls    []inferencePrewarmCall
-	failNext bool
+	mu           sync.Mutex
+	calls        []inferencePrewarmCall
+	failNext     bool
+	rejectNext   bool
+	rejectAlways bool
 }
 
 type inferencePrewarmCall struct {
@@ -26,15 +28,22 @@ type inferencePrewarmCall struct {
 	model    string
 }
 
-func (f *fakeInferencePrewarmUpstream) PrewarmNVIDIAInference(ctx context.Context, proxyURL, baseURL, apiKey, model string) error {
+func (f *fakeInferencePrewarmUpstream) PrewarmNVIDIAInference(ctx context.Context, proxyURL, baseURL, apiKey, model string) (NVIDIAInferencePrewarmOutcome, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, inferencePrewarmCall{proxyURL, baseURL, apiKey, model})
 	if f.failNext {
 		f.failNext = false
-		return errors.New("transport error")
+		return NVIDIAInferencePrewarmRejected, errors.New("transport error")
 	}
-	return nil
+	if f.rejectNext {
+		f.rejectNext = false
+		return NVIDIAInferencePrewarmRejected, nil
+	}
+	if f.rejectAlways {
+		return NVIDIAInferencePrewarmRejected, nil
+	}
+	return NVIDIAInferencePrewarmAccepted, nil
 }
 
 func (f *fakeInferencePrewarmUpstream) count() int {
@@ -286,4 +295,43 @@ func TestNVIDIAInferencePrewarmer_NilBlockCheckerPreWarmsAll(t *testing.T) {
 	waitForRounds(t, p, 1)
 	require.Equal(t, 2, upstream.count(), "nil checker keeps legacy behavior: prewarm all candidates")
 	require.Equal(t, 2, p.Snapshot().LastRoundAccounts)
+}
+
+func TestNVIDIAInferencePrewarmer_RejectedOutcomeDoesNotCountAsSuccessOrFail(t *testing.T) {
+	upstream := &fakeInferencePrewarmUpstream{rejectAlways: true}
+	account := &Account{ID: 70, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{
+		"base_url": "https://integrate.api.nvidia.com/v1", "api_key": "key-1",
+		"model_mapping": map[string]any{"user-model": "nvidia/model-a"},
+	}}
+	repo := &fakeInferencePrewarmAccountRepo{accounts: []Account{*account}}
+	metrics := NewNVIDIASharedConnectionPoolMetrics()
+
+	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "", metrics, nil)
+	p.Start()
+	defer p.Stop()
+
+	waitForRounds(t, p, 1)
+	lastAt, success, fail := metrics.SnapshotPrewarm(70)
+	require.Equal(t, int64(0), success, "rejected (non-2xx) prewarm must not count as success")
+	require.Equal(t, int64(0), fail, "rejected (non-2xx) prewarm must not accumulate failTotal")
+	require.Equal(t, int64(0), lastAt, "rejected (non-2xx) prewarm must not stamp lastPrewarmAt")
+}
+
+func TestNVIDIAInferencePrewarmer_RejectedOutcomeTrackedAsRejectedInSnapshot(t *testing.T) {
+	upstream := &fakeInferencePrewarmUpstream{rejectAlways: true}
+	account := &Account{ID: 71, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{
+		"base_url": "https://integrate.api.nvidia.com/v1", "api_key": "key-1",
+		"model_mapping": map[string]any{"user-model": "nvidia/model-a"},
+	}}
+	repo := &fakeInferencePrewarmAccountRepo{accounts: []Account{*account}}
+
+	p := NewNVIDIAInferencePrewarmer(upstream, repo, true, 0, "", nil, nil)
+	p.Start()
+	defer p.Stop()
+
+	waitForRounds(t, p, 1)
+	snap := p.Snapshot()
+	require.Equal(t, int64(0), snap.SucceededTotal, "rejected prewarm must not count as succeeded")
+	require.Equal(t, int64(0), snap.FailedTotal, "rejected prewarm is not a transport failure")
+	require.Equal(t, int64(1), snap.RejectedTotal, "rejected prewarm tracked separately in snapshot")
 }
