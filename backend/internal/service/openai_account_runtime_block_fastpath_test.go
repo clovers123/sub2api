@@ -542,3 +542,25 @@ func TestNVIDIAQuotaFastPath_RateLimit429NotBlocked(t *testing.T) {
 	require.False(t, shouldDisable, "rate-class 429 must not be intercepted by quota fastpath")
 	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account), "rate-class 429 must not land in 30min cooldown")
 }
+
+func TestIsNvidiaPrewarmBlocked_ReflectsRuntimeBlockByID(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{ID: 61, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+
+	require.False(t, svc.IsNvidiaPrewarmBlocked(61), "no block yet")
+
+	svc.BlockAccountScheduling(account, time.Now().Add(time.Minute), "nvidia_quota")
+	require.True(t, svc.IsNvidiaPrewarmBlocked(61), "blocked account must be skipped for prewarm")
+
+	svc.ClearAccountSchedulingBlock(61)
+	require.False(t, svc.IsNvidiaPrewarmBlocked(61), "cleared block must unblock prewarm")
+}
+
+func TestIsNvidiaPrewarmBlocked_NilSafeAndBadArgs(t *testing.T) {
+	var svc *OpenAIGatewayService
+	require.False(t, svc.IsNvidiaPrewarmBlocked(1), "nil receiver is safe")
+
+	svc = &OpenAIGatewayService{}
+	require.False(t, svc.IsNvidiaPrewarmBlocked(0), "accountID<=0 rejected")
+	require.False(t, svc.IsNvidiaPrewarmBlocked(-5), "accountID<=0 rejected")
+}
