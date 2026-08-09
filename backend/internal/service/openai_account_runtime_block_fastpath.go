@@ -27,6 +27,10 @@ const (
 	// nvidiaUnauthorizedCooldown 是 NVIDIA 免费 API key 失效后的冷却时长。
 	// API key 失效通常需要 NVIDIA 侧重新申请或人工重置，24h 才有重试意义。
 	nvidiaUnauthorizedCooldown = 24 * time.Hour
+	// nvidiaQuotaCooldown 是 NVIDIA 免费 API 日/周期配额耗尽后的冷却时长。
+	// 配额耗尽（"quota"/"daily"/"monthly" 语义 429）在额度重置前重试无意义，
+	// 30 分钟足够等待多数周期重置，同时避免高频轮询被风控升级。
+	nvidiaQuotaCooldown = 30 * time.Minute
 )
 
 // OpenAIOAuth429FailoverState tracks the request-local follow-up budget after
@@ -192,6 +196,16 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	// Team 联动熔断必须先于 model-not-found 与账户级临时不可调度规则的早退。
 	if s.rateLimitService != nil {
 		s.rateLimitService.maybeHandleOpenAITeamLinkedError(stateCtx, account, statusCode, responseBody)
+	}
+
+	// NVIDIA 免费 API 配额耗尽型 429（quota/daily/monthly 语义）：在进入自适应节流（1s+Retry-After 短退避）
+	// 之前先行判定，直接送 30min 长冷却并阻止 failover 扩散——额度重置前重试无意义，高频轮询反而升级风控。
+	// 仅 NVIDIA API-Key 账号生效：quota 关键词较通用，非 NVIDIA 上游的同类 429 不应被误封 30min。
+	if account.Type == AccountTypeAPIKey && isNVIDIAAccountByHostname(account) &&
+		statusCode == http.StatusTooManyRequests && classifyNVIDIA429Body(responseBody) == nvidia429Quota {
+		recordNVIDIAUpstreamFailure(s, ctx, account, statusCode, responseBody, nvidiaReasonQuotaExhausted)
+		s.BlockAccountScheduling(account, time.Now().Add(nvidiaQuotaCooldown), "nvidia_quota_exhausted")
+		return true
 	}
 
 	// NVIDIA 自适应节流：在进入旧有的 isNVIDIAResourceExhaustedError 全账户分支之前，

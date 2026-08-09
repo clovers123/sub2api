@@ -20,6 +20,7 @@ const (
 	nvidiaReason5xxGatewayTransient = "nvidia_5xx_gateway_transient" // 502/503/504: 网关层临时
 	nvidiaReasonStreamInterrupt     = "nvidia_stream_interrupt"      // SSE 流中断（非 HTTP status）
 	nvidiaReasonRetrySendError      = "nvidia_retry_send_error"
+	nvidiaReasonQuotaExhausted      = "nvidia_quota_exhausted" // 429 配额耗尽（quota/daily/monthly 语义）→ 30min 长冷却
 )
 
 // recordNVIDIAUpstreamFailure 是 NVIDIA 上游错误的统一记录入口，集中处理：

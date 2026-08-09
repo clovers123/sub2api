@@ -589,3 +589,101 @@ func TestShouldStopOpenAIOAuth429Failover_TracksOneGrokFollowupAttempt(t *testin
 	require.False(t, svc.ShouldStopOpenAIOAuth429Failover(account, http.StatusTooManyRequests, 0, &state))
 	require.False(t, svc.ShouldStopOpenAIOAuth429Failover(apiKeyAccount, http.StatusTooManyRequests, 2, &state))
 }
+
+// TestNVIDIA429QuotaFastPath_BlocksNVIDIAAPIKey 验证 quota 语义 429 在 fastpath 中被
+// 截获并进入 30min BlockAccountScheduling（E 方案的核心验收：quota → 长冷却，
+// 不进入后续 adaptive throttle 短退避与 failover 扩散）。
+func TestNVIDIA429QuotaFastPath_BlocksNVIDIAAPIKey(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:       50,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url": "https://integrate.api.nvidia.com/v1",
+			"api_key":  "nvapi-test-key",
+		},
+	}
+
+	body := []byte(`{"error":{"message":"You have exceeded your current quota, please check your plan and billing details"}}`)
+	shouldDisable := svc.handleOpenAIAccountUpstreamError(context.Background(), account, http.StatusTooManyRequests, http.Header{}, body)
+
+	require.True(t, shouldDisable, "quota-class 429 must short-circuit with shouldDisable=true")
+	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account), "NVIDIA API key with quota 429 must be runtime blocked")
+
+	value, ok := svc.openaiAccountRuntimeBlockUntil.Load(account.ID)
+	require.True(t, ok)
+	blockedUntil, ok := value.(time.Time)
+	require.True(t, ok)
+	// 必须用 nvidiaQuotaCooldown（30min），而不是 nvidiaResourceExhaustedCooldown（2min）
+	require.WithinDuration(t, time.Now().Add(nvidiaQuotaCooldown), blockedUntil, 5*time.Second)
+}
+
+// TestNVIDIA429QuotaFastPath_IgnoresNonNVIDIAAPIKey quota 关键词较通用，
+// 非 NVIDIA 上游的 API-Key 账号返回同类 429 body 时不得被 30min 误封。
+// 该账号不满足 isNVIDIAAccountByHostname，应保持原路径（OAuth 侧 429 逻辑）。
+func TestNVIDIA429QuotaFastPath_IgnoresNonNVIDIAAPIKey(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:       51,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey, // 默认 base_url = https://api.openai.com → 非 NVIDIA
+		Credentials: map[string]any{
+			"api_key": "sk-openai-key",
+		},
+	}
+
+	body := []byte(`{"error":{"message":"You have exceeded your current quota for today"}}`)
+	shouldDisable := svc.handleOpenAIAccountUpstreamError(context.Background(), account, http.StatusTooManyRequests, http.Header{}, body)
+
+	require.False(t, shouldDisable, "non-NVIDIA API key must not be pulled into nvidia_quota fastpath")
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account), "non-NVIDIA API key must not be 30min blocked")
+}
+
+// TestNVIDIAQuotaFastPath_Resource429Keeps2MinCooldown ResourceExhausted 语义
+// 的 429 仍走既有 2min 冷却（isNVIDIAResourceExhaustedError），不被 quota 分支抢占。
+// 两个分支基于同一 classify 结果互斥，避免新分层破坏批次1的 worker 池饱和语义。
+func TestNVIDIAQuotaFastPath_Resource429Keeps2MinCooldown(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:       52,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url": "https://integrate.api.nvidia.com/v1",
+			"api_key":  "nvapi-test-key",
+		},
+	}
+
+	body := []byte(`{"error":{"code":"ResourceExhausted","message":"Worker local total request limit exceeded"}}`)
+	shouldDisable := svc.handleOpenAIAccountUpstreamError(context.Background(), account, http.StatusTooManyRequests, http.Header{}, body)
+
+	require.True(t, shouldDisable, "resource-class 429 still handled")
+	value, ok := svc.openaiAccountRuntimeBlockUntil.Load(account.ID)
+	require.True(t, ok)
+	blockedUntil, ok := value.(time.Time)
+	require.True(t, ok)
+	require.WithinDuration(t, time.Now().Add(nvidiaResourceExhaustedCooldown), blockedUntil, 5*time.Second,
+		"ResourceExhausted 429 must keep 2min cooldown, not widened to quota 30min")
+}
+
+// TestNVIDIAQuotaFastPath_RateLimit429NotBlocked 瞬时 RPM 语义 429 不进 quota 分支：
+// 既不进入 nvidia_quota long-cooldown，也不 shouldDisable（保持既有自适应节流语义）。
+func TestNVIDIAQuotaFastPath_RateLimit429NotBlocked(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:       53,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url": "https://integrate.api.nvidia.com/v1",
+			"api_key":  "nvapi-test-key",
+		},
+	}
+
+	body := []byte(`{"error":{"message":"Requests per minute limit exceeded, retry in 60s"}}`)
+	shouldDisable := svc.handleOpenAIAccountUpstreamError(context.Background(), account, http.StatusTooManyRequests, http.Header{}, body)
+
+	require.False(t, shouldDisable, "rate-class 429 must not be intercepted by quota fastpath")
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account), "rate-class 429 must not land in 30min cooldown")
+}
