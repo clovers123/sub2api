@@ -616,9 +616,10 @@ func extractCCStreamUsage(payload string) *OpenAIUsage {
 }
 
 // extractCCStreamOutputBytes 累计单个 CC 流式 chunk 中实际输出字段的字节数
-// （B3）：只计 choices[*].delta.content 与 reasoning_content，用于 NVIDIA 缺失
-// usage 时的 output token 估算。不计入 id/object/model/choices JSON envelope
-// 与 usage-only chunk，避免分块越多估算越虚高。
+// （B3）：只计 choices[*].delta.content、reasoning_content 与
+// tool_calls[*].function.arguments（B3'），用于 NVIDIA 缺失 usage 时的
+// output token 估算。不计入 id/object/model/choices JSON envelope 与
+// usage-only chunk，避免分块越多估算越虚高。
 func extractCCStreamOutputBytes(payload string) int {
 	if payload == "" {
 		return 0
@@ -639,13 +640,24 @@ func extractCCStreamOutputBytes(payload string) int {
 		if reasoning := delta.Get("reasoning_content"); reasoning.Exists() && reasoning.Type == gjson.String {
 			total += len(reasoning.String())
 		}
+		if toolCalls := delta.Get("tool_calls"); toolCalls.Exists() && toolCalls.IsArray() {
+			for _, call := range toolCalls.Array() {
+				if args := call.Get("function.arguments"); args.Exists() && args.Type == gjson.String {
+					total += len(args.String())
+				}
+			}
+		}
+		if legacyCall := delta.Get("function_call.arguments"); legacyCall.Exists() && legacyCall.Type == gjson.String {
+			total += len(legacyCall.String())
+		}
 	}
 	return total
 }
 
 // extractCCNonStreamOutputBytes 返回 CC 非流式响应中实际输出字段的字节数
-// （B3）：choices[*].message.content 与 reasoning_content，用于 NVIDIA 缺失
-// usage 时的 output token 估算。不使用整个 JSON body 长度（含 id/object/model
+// （B3）：choices[*].message.content、reasoning_content 与
+// tool_calls[*].function.arguments（B3'），用于 NVIDIA 缺失 usage 时的
+// output token 估算。不使用整个 JSON body 长度（含 id/object/model
 // envelope），避免高估。
 func extractCCNonStreamOutputBytes(body []byte) int {
 	if len(body) == 0 {
@@ -666,6 +678,16 @@ func extractCCNonStreamOutputBytes(body []byte) int {
 		}
 		if reasoning := message.Get("reasoning_content"); reasoning.Exists() && reasoning.Type == gjson.String {
 			total += len(reasoning.String())
+		}
+		if toolCalls := message.Get("tool_calls"); toolCalls.Exists() && toolCalls.IsArray() {
+			for _, call := range toolCalls.Array() {
+				if args := call.Get("function.arguments"); args.Exists() && args.Type == gjson.String {
+					total += len(args.String())
+				}
+			}
+		}
+		if legacyCall := message.Get("function_call.arguments"); legacyCall.Exists() && legacyCall.Type == gjson.String {
+			total += len(legacyCall.String())
 		}
 	}
 	return total

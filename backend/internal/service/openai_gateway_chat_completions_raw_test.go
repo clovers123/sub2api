@@ -895,6 +895,10 @@ func TestExtractCCStreamOutputBytes_CountsContentOnly(t *testing.T) {
 	require.Equal(t, 0, extractCCStreamOutputBytes(""), "empty payload contributes nothing")
 	require.Equal(t, len("reasoning text"), extractCCStreamOutputBytes(`{"id":"x","choices":[{"index":0,"delta":{"reasoning_content":"reasoning text"}}]}`),
 		"reasoning_content is counted as output")
+	require.Equal(t, len(`{"city":"Beijing"}`), extractCCStreamOutputBytes(`{"id":"x","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"get_weather","arguments":"{\"city\":\"Beijing\"}"}}]}}]}`),
+		"tool_calls function.arguments is counted as output (B3')")
+	require.Equal(t, 0, extractCCStreamOutputBytes(`{"id":"x","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"get_weather","arguments":""}}]}}]}`),
+		"empty tool call arguments contribute nothing")
 }
 
 func TestExtractCCNonStreamOutputBytes_CountsMessageContentOnly(t *testing.T) {
@@ -906,6 +910,10 @@ func TestExtractCCNonStreamOutputBytes_CountsMessageContentOnly(t *testing.T) {
 
 	noContent := `{"id":"x","choices":[{"index":0,"message":{"role":"assistant"},"finish_reason":"stop"}]}`
 	require.Equal(t, 0, extractCCNonStreamOutputBytes([]byte(noContent)), "no content contributes nothing")
+
+	toolCall := `{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Shanghai\"}"}}]},"finish_reason":"tool_calls"}]}`
+	require.Equal(t, len(`{"city":"Shanghai"}`), extractCCNonStreamOutputBytes([]byte(toolCall)),
+		"non-stream tool_calls function.arguments is counted as output (B3')")
 
 	require.Equal(t, 0, extractCCNonStreamOutputBytes([]byte(`{"id":"x"}`)), "no choices contributes nothing")
 	require.Equal(t, 0, extractCCNonStreamOutputBytes(nil), "nil body contributes nothing")
