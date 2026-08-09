@@ -272,11 +272,38 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	if account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
+
+	// A1: NVIDIA 并发维度节流——真实转发前 acquire 并发槽位。
+	// 仅对 NVIDIA 上游生效（与共享连接池 profile 判定一致）；失败时返回 429，
+	// 由 handler 的 failover/错误响应路径承接，不再把请求压向已饱和的 NVIDIA 上游。
+	var releaseNVIDIAInflight func()
+	if s.rateLimitService != nil &&
+		s.chatCompletionsHTTPUpstreamProfile(account, upstreamReq.URL) == HTTPUpstreamProfileNVIDIA {
+		release, ok := s.rateLimitService.TryAcquireNVIDIAInflight(ctx, NVIDIAThrottleScope{
+			AccountID:      account.ID,
+			CanonicalModel: upstreamModel,
+		})
+		if !ok {
+			writeChatCompletionsError(c, http.StatusTooManyRequests, "rate_limit_error",
+				"NVIDIA upstream concurrency limit reached; retry shortly")
+			return nil, errNVIDIAInflightLimitReached
+		}
+		releaseNVIDIAInflight = release
+	}
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 	if err != nil {
+		if releaseNVIDIAInflight != nil {
+			releaseNVIDIAInflight()
+		}
 		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	// 响应体（含 SSE 流）由后续 handler 同步读完，读完即返回；此时再归还槽位。
+	defer func() {
+		_ = resp.Body.Close()
+		if releaseNVIDIAInflight != nil {
+			releaseNVIDIAInflight()
+		}
+	}()
 
 	// 8. Handle error response with failover
 	if resp.StatusCode >= 400 {

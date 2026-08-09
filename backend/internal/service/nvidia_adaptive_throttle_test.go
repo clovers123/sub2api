@@ -195,3 +195,20 @@ func TestNVIDIAAdaptiveThrottleBlockedError_MessageContainsDuration(t *testing.T
 	require.Contains(t, e.Error(), "5s")
 	require.Equal(t, 100*time.Millisecond, e.ShortWait)
 }
+
+func TestDefaultNVIDIAAdaptiveThrottleSettings_IncludesConcurrencyAndJitter(t *testing.T) {
+	def := DefaultNVIDIAAdaptiveThrottleSettings()
+	require.Equal(t, true, def.Enabled)
+	require.Equal(t, 30*time.Minute, def.StateTTL)
+	require.Equal(t, 30*time.Second, def.MaxSpacing)
+	require.Equal(t, 2000*time.Millisecond, def.ShortWait)
+	require.Equal(t, 4, def.MaxInflight, "A1 并发上限默认 4（免费 tier 并发 2-4）")
+	require.Equal(t, 4000*time.Millisecond, def.L1Jitter, "B3 L1 TTL 抖动默认 4s")
+}
+
+func TestDefaultNVIDIASharedPoolSettings_InferencePrewarm(t *testing.T) {
+	def := DefaultNVIDIASharedPoolSettings()
+	require.True(t, def.InferencePrewarmEnabled, "B1 真实推理预热默认启用")
+	require.Equal(t, 3600, def.InferencePrewarmIntervalSec)
+	require.Equal(t, "", def.InferencePrewarmModel)
+}

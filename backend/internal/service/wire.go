@@ -366,6 +366,30 @@ func ProvideNVIDIAConnectionPrewarmer(upstream HTTPUpstream, accountRepo Account
 	return svc
 }
 
+// ProvideNVIDIAInferencePrewarmer creates and starts NVIDIAInferencePrewarmer.
+// 默认启用（settings.nvidia_shared_connection_pool.inference_prewarm_enabled
+// 默认 "true"）；读配置失败时回退默认值（启用 / 3600s / 空模型）。
+func ProvideNVIDIAInferencePrewarmer(upstream HTTPUpstream, accountRepo AccountRepository, settingService *SettingService) *NVIDIAInferencePrewarmer {
+	pool := DefaultNVIDIASharedPoolSettings()
+	if settingService != nil {
+		if s, err := settingService.GetNVIDIASharedPoolSettings(context.Background()); err == nil && s != nil {
+			pool = s
+		}
+	}
+	// repository 的 httpUpstreamService 同时实现 HTTPUpstream 与
+	// NVIDIAInferencePrewarmUpstream；断言失败（如测试桩）则预热能力缺失，Start 为 no-op。
+	inferenceUpstream, _ := upstream.(NVIDIAInferencePrewarmUpstream)
+	svc := NewNVIDIAInferencePrewarmer(
+		inferenceUpstream,
+		accountRepo,
+		pool.InferencePrewarmEnabled,
+		pool.InferencePrewarmIntervalSec,
+		pool.InferencePrewarmModel,
+	)
+	svc.Start()
+	return svc
+}
+
 // ProvideSubscriptionExpiryService creates and starts SubscriptionExpiryService.
 func ProvideSubscriptionExpiryService(userSubRepo UserSubscriptionRepository, settingRepo SettingRepository, notificationEmailService *NotificationEmailService, lockCache LeaderLockCache, db *sql.DB) *SubscriptionExpiryService {
 	svc := NewSubscriptionExpiryService(userSubRepo, time.Minute)
@@ -988,6 +1012,7 @@ var ProviderSet = wire.NewSet(
 	ProvideOpenAICodexVersionSyncService,
 	ProvideProxyExpiryService,
 	ProvideNVIDIAConnectionPrewarmer,
+	ProvideNVIDIAInferencePrewarmer,
 	ProvideSubscriptionExpiryService,
 	ProvideTimingWheelService,
 	ProvideDashboardAggregationService,

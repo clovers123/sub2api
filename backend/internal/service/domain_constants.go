@@ -619,6 +619,12 @@ const (
 	SettingKeyNVIDIAAdaptiveThrottleStateTTLMinutes   = "nvidia_adaptive_throttle_state_ttl_minutes"   // int，默认 30，范围 1..1440
 	SettingKeyNVIDIAAdaptiveThrottleMaxSpacingSeconds = "nvidia_adaptive_throttle_max_spacing_seconds" // int，默认 30，范围 1..300
 	SettingKeyNVIDIAAdaptiveThrottleShortWaitMs       = "nvidia_adaptive_throttle_short_wait_ms"       // int，默认 2000，范围 0..10000
+	// 并发维度节流：同一 (账号, 模型) 上同时占用的在途请求数上限。免费 tier 常并发 2-4，
+	// 默认 4；0 表示关闭并发控制（仅保留时间维度）。范围 0..512。
+	SettingKeyNVIDIAAdaptiveThrottleMaxInflight = "nvidia_adaptive_throttle_max_inflight" // int，默认 4，范围 0..512（0=关）
+	// L1 节流快照 TTL 抖动窗口（毫秒）：写 L1 blocked 时 TTL = 8s + rand(0, jitter)，
+	// 打破「同一时刻同时到期、同时苏醒重试」的 thundering herd。0 关闭抖动。范围 0..30000。
+	SettingKeyNVIDIAAdaptiveThrottleL1JitterMs = "nvidia_adaptive_throttle_l1_jitter_ms" // int，默认 4000，范围 0..30000
 
 	// NVIDIA 共享连接池 — DB 持久化（"软重启生效"：新连接才遵守新值；老 keepalive 连接保持到 idle 超时）。
 	// 运行时仍由 config 文件 + 启动时构造的 HTTP transport 控制；DB 仅供 UI 当前值显示与未来 reload hook 接入。
@@ -627,6 +633,12 @@ const (
 	SettingKeyNVIDIASharedConnectionPoolPrewarmEnabled     = "nvidia_shared_connection_pool_prewarm_enabled"       // bool，默认 "true"
 	SettingKeyNVIDIASharedConnectionPoolPrewarmIntervalSec = "nvidia_shared_connection_pool_prewarm_interval_sec"   // int，默认 240，范围 0..86400（0 = 仅启动时预热一次）
 	SettingKeyNVIDIASharedConnectionPoolH2PingIdleTimeoutSec = "nvidia_shared_connection_pool_h2_ping_idle_timeout_sec" // int，默认 0，范围 0..600（0 = 走全局默认 15s）
+
+	// NVIDIA 真实推理预热 — 发送最小推理请求（max_tokens=1）触发模型实例加载/保活。
+	// 与连接预热（TCP+TLS+H2 建连）平级独立；默认启用。模型为空时取账号 model mapping 第一目标。
+	SettingKeyNVIDIASharedConnectionPoolInferencePrewarmEnabled     = "nvidia_shared_connection_pool_inference_prewarm_enabled"     // bool，默认 "true"
+	SettingKeyNVIDIASharedConnectionPoolInferencePrewarmIntervalSec = "nvidia_shared_connection_pool_inference_prewarm_interval_sec" // int，默认 3600，范围 0..86400（0 = 仅启动时预热一次）
+	SettingKeyNVIDIASharedConnectionPoolInferencePrewarmModel       = "nvidia_shared_connection_pool_inference_prewarm_model"       // string，默认 ""（= 取账号模型映射第一个目标）
 
 	// NVIDIA 连续 5xx 自动冷却 — NVIDIA 免费 API 偶发 5xx 集中爆发期间，让坏账号
 	// 主动退出轮换，避免客户端被坏账号反复截断。3 个 key 协同工作：在 window 秒内

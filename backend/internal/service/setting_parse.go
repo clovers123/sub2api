@@ -267,6 +267,8 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyNVIDIAAdaptiveThrottleStateTTLMinutes:   "30",
 		SettingKeyNVIDIAAdaptiveThrottleMaxSpacingSeconds: "30",
 		SettingKeyNVIDIAAdaptiveThrottleShortWaitMs:       "2000",
+		SettingKeyNVIDIAAdaptiveThrottleMaxInflight:       "4",
+		SettingKeyNVIDIAAdaptiveThrottleL1JitterMs:        "4000",
 
 		// NVIDIA 共享连接池：与 DefaultNVIDIASharedPoolSettings 一致。
 		// 默认启用；idle 600s 走 gateway 全局默认；prewarm 启用；间隔 240s；h2 ping 0 走全局 15s。
@@ -275,6 +277,9 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyNVIDIASharedConnectionPoolPrewarmEnabled:        "true",
 		SettingKeyNVIDIASharedConnectionPoolPrewarmIntervalSec:     "240",
 		SettingKeyNVIDIASharedConnectionPoolH2PingIdleTimeoutSec:  "0",
+		SettingKeyNVIDIASharedConnectionPoolInferencePrewarmEnabled:     "true",
+		SettingKeyNVIDIASharedConnectionPoolInferencePrewarmIntervalSec: "3600",
+		SettingKeyNVIDIASharedConnectionPoolInferencePrewarmModel:       "",
 
 		// NVIDIA 连续 5xx 自动冷却：3 次 / 60s 窗口 / 120s 冷却。
 		// 3 次能跳过偶发单点 5xx；60s 窗口覆盖集中爆发；120s 让 NVIDIA Worker 池有恢复机会。
@@ -1036,6 +1041,14 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		nvidiaSharedPoolH2PingIdleTimeoutSecMax,
 		0,
 	)
+	result.NVIDIASharedConnectionPoolInferencePrewarmEnabled = settings[SettingKeyNVIDIASharedConnectionPoolInferencePrewarmEnabled] == "true"
+	result.NVIDIASharedConnectionPoolInferencePrewarmIntervalSec = parseIntInRange(
+		settings[SettingKeyNVIDIASharedConnectionPoolInferencePrewarmIntervalSec],
+		nvidiaSharedPoolInferencePrewarmIntervalSecMin,
+		nvidiaSharedPoolInferencePrewarmIntervalSecMax,
+		3600,
+	)
+	result.NVIDIASharedConnectionPoolInferencePrewarmModel = settings[SettingKeyNVIDIASharedConnectionPoolInferencePrewarmModel]
 
 	result.NVIDIAConsecutive5xxThreshold = parseIntInRange(
 		settings[SettingKeyNVIDIAConsecutive5xxThreshold],

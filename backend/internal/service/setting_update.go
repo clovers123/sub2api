@@ -557,6 +557,18 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	}
 	updates[SettingKeyNVIDIAAdaptiveThrottleShortWaitMs] = strconv.Itoa(shortWaitMs)
 
+	maxInflight := settings.NVIDIAAdaptiveThrottleMaxInflight
+	if maxInflight < nvidiaAdaptiveThrottleMaxInflightMin || maxInflight > nvidiaAdaptiveThrottleMaxInflightMax {
+		maxInflight = 4
+	}
+	updates[SettingKeyNVIDIAAdaptiveThrottleMaxInflight] = strconv.Itoa(maxInflight)
+
+	l1JitterMs := settings.NVIDIAAdaptiveThrottleL1JitterMs
+	if l1JitterMs < nvidiaAdaptiveThrottleL1JitterMsMin || l1JitterMs > nvidiaAdaptiveThrottleL1JitterMsMax {
+		l1JitterMs = 4000
+	}
+	updates[SettingKeyNVIDIAAdaptiveThrottleL1JitterMs] = strconv.Itoa(l1JitterMs)
+
 	updates[SettingKeyNVIDIAAdaptiveThrottleEnabled] = strconv.FormatBool(settings.NVIDIAAdaptiveThrottleEnabled)
 
 	// NVIDIA 共享连接池：越界回退默认值（与 DefaultNVIDIASharedPoolSettings / parseSettings 一致）。
@@ -581,6 +593,14 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 
 	updates[SettingKeyNVIDIASharedConnectionPoolEnabled] = strconv.FormatBool(settings.NVIDIASharedConnectionPoolEnabled)
 	updates[SettingKeyNVIDIASharedConnectionPoolPrewarmEnabled] = strconv.FormatBool(settings.NVIDIASharedConnectionPoolPrewarmEnabled)
+
+	inferenceIntervalSec := settings.NVIDIASharedConnectionPoolInferencePrewarmIntervalSec
+	if inferenceIntervalSec < nvidiaSharedPoolInferencePrewarmIntervalSecMin || inferenceIntervalSec > nvidiaSharedPoolInferencePrewarmIntervalSecMax {
+		inferenceIntervalSec = 3600
+	}
+	updates[SettingKeyNVIDIASharedConnectionPoolInferencePrewarmIntervalSec] = strconv.Itoa(inferenceIntervalSec)
+	updates[SettingKeyNVIDIASharedConnectionPoolInferencePrewarmEnabled] = strconv.FormatBool(settings.NVIDIASharedConnectionPoolInferencePrewarmEnabled)
+	updates[SettingKeyNVIDIASharedConnectionPoolInferencePrewarmModel] = settings.NVIDIASharedConnectionPoolInferencePrewarmModel
 
 	threshold := settings.NVIDIAConsecutive5xxThreshold
 	if threshold < nvidiaConsecutive5xxThresholdMin || threshold > nvidiaConsecutive5xxThresholdMax {

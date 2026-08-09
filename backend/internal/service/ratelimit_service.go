@@ -36,6 +36,7 @@ type RateLimitService struct {
 	nvidiaMetrics               *NVIDIAAdaptiveThrottleMetrics
 	nvidiaThrottleNow           func() time.Time
 	nvidiaThrottleJitter        func(time.Duration) time.Duration
+	nvidiaInflight              *NVIDIAInflightTracker
 	usageCacheMu                sync.RWMutex
 	usageCache                  map[int64]*geminiUsageCacheEntry
 }
@@ -99,6 +100,7 @@ func NewRateLimitService(accountRepo AccountRepository, usageRepo UsageLogReposi
 		nvidiaMetrics:          &NVIDIAAdaptiveThrottleMetrics{},
 		nvidiaThrottleNow:      time.Now,
 		nvidiaThrottleJitter:   defaultNVIDIAAdaptiveThrottleJitter,
+		nvidiaInflight:         newNVIDIAInflightTracker(),
 	}
 }
 

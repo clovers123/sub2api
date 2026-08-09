@@ -58,6 +58,12 @@ func (s *RateLimitService) getNVIDIAAdaptiveThrottleSettings(ctx context.Context
 	return settings
 }
 
+// nvidiaAdaptiveThrottleL1Jitter 返回当前配置的 L1 TTL 抖动窗口; 0 表示关闭抖动.
+// 走 5s 缓存的 settings getter, 不会每次打 DB.
+func (s *RateLimitService) nvidiaAdaptiveThrottleL1Jitter(ctx context.Context) time.Duration {
+	return s.getNVIDIAAdaptiveThrottleSettings(ctx).L1Jitter
+}
+
 func (c *nvidiaAdaptiveThrottleSettingsCache) load(now time.Time) *NVIDIAAdaptiveThrottleSettings {
 	if c == nil {
 		return nil

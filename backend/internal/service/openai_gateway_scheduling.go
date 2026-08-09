@@ -870,6 +870,10 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 	if len(eligible) == 0 {
 		return nil, compactBlocked, filterStats
 	}
+	eligible = filterNVIDIAAvailableAccounts(ctx, s, requestedModel, eligible)
+	if len(eligible) == 0 {
+		return nil, compactBlocked
+	}
 	rateOrder := openAILegacyUpstreamRateOrder{}
 	if preferLowUpstreamRate {
 		rateOrder = newOpenAILegacyUpstreamRateOrder(eligible, time.Now(), s.openAIOAuthSchedulingRateMultiplier(ctx))
@@ -1083,6 +1087,10 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	if len(candidates) == 0 {
 		return nil, ErrNoAvailableAccounts
 	}
+	candidates = filterNVIDIAAvailableAccounts(ctx, s, requestedModel, candidates)
+	if len(candidates) == 0 {
+		return nil, ErrNoAvailableAccounts
+	}
 	rateOrder := openAILegacyUpstreamRateOrder{}
 	if preferLowUpstreamRate {
 		rateOrder = newOpenAILegacyUpstreamRateOrder(candidates, time.Now(), s.openAIOAuthSchedulingRateMultiplier(ctx))
@@ -1273,6 +1281,51 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		return nil, ErrNoAvailableCompactAccounts
 	}
 	return nil, ErrNoAvailableAccounts
+}
+
+// nvidiaGatedForOpenAIScheduling 报告调度层是否应优先避开该 OpenAI 候选账号：
+// A1 并发维度预 gate——仅对 NVIDIA 上游（共享池开关 + hostname 判定，与 forward 层
+// chatCompletionsHTTPUpstreamProfile 一致）生效，scope 键与 forward 层 acquire 完全一致
+// （accountID + normalize 后的 canonical model）。
+//
+// 该检查只作为候选过滤偏好：若全部候选都被 gate，调用方必须保留原列表兜底，
+// 由 forward 层给出 429 语义，避免把 429 误降级为"无可用账号"。
+func (s *OpenAIGatewayService) nvidiaGatedForOpenAIScheduling(ctx context.Context, account *Account, requestedModel string) bool {
+	if s == nil || s.cfg == nil || !s.cfg.Gateway.NvidiaSharedConnectionPool.Enabled || s.rateLimitService == nil {
+		return false
+	}
+	if account == nil || account.ID <= 0 || !isNVIDIAAccountByHostname(account) {
+		return false
+	}
+	// 与 forward 层 acquire scope 保持一致：billingModel 经账号模型映射解析，
+	// 再 normalize 为 upstream 模型（OpenAI 请求 messagesDispatchMappedModel==""）。
+	canonicalModel := normalizeOpenAIModelForUpstream(account, resolveOpenAIForwardModel(account, requestedModel, ""))
+	return s.rateLimitService.nvidiaInflightFull(ctx, NVIDIAThrottleScope{
+		AccountID:      account.ID,
+		CanonicalModel: canonicalModel,
+	})
+}
+
+// filterNVIDIAAvailableAccounts 仅在有非饱和候选时才剔除 NVIDIA 饱和账号：
+// 全部候选都被 A1 门槛判满时保留原顺序兜底，避免把 429 语义误报为"无账号"。
+func filterNVIDIAAvailableAccounts(ctx context.Context, s *OpenAIGatewayService, requestedModel string, accounts []*Account) []*Account {
+	if s == nil || s.rateLimitService == nil || len(accounts) == 0 {
+		return accounts
+	}
+	kept := make([]*Account, 0, len(accounts))
+	gated := 0
+	for _, acc := range accounts {
+		if s.nvidiaGatedForOpenAIScheduling(ctx, acc, requestedModel) {
+			gated++
+			continue
+		}
+		kept = append(kept, acc)
+	}
+	if len(kept) == 0 {
+		// 全部饱和：保留原列表，forward 层会给出 429。
+		return accounts
+	}
+	return kept
 }
 
 func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, groupID *int64, platform string) ([]Account, error) {
