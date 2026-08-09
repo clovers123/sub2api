@@ -854,7 +854,11 @@ type nvidiaInferencePrewarmRequestBody struct {
 // 任何 HTTP 状态码（含 401/429）均视为成功，仅传输层错误返回 error。
 //
 // 实现 service.NVIDIAInferencePrewarmUpstream 接口。
-func (s *httpUpstreamService) PrewarmNVIDIAInference(ctx context.Context, proxyURL string, baseURL string, apiKey string, model string) error {
+// PrewarmNVIDIAInference 对指定代理发送最小推理请求：POST {baseURL}/v1/chat/completions，
+// 携带 Bearer apiKey 与指定 model（最小载荷 max_tokens=1）。
+// 返回 Accepted（HTTP 2xx，模型已加载可复用）/ Rejected（HTTP 非 2xx 接单但不可复用）；
+// 仅传输层错误返回 non-nil error（此时 outcome 无意义）。
+func (s *httpUpstreamService) PrewarmNVIDIAInference(ctx context.Context, proxyURL string, baseURL string, apiKey string, model string) (service.NVIDIAInferencePrewarmOutcome, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -867,17 +871,17 @@ func (s *httpUpstreamService) PrewarmNVIDIAInference(ctx context.Context, proxyU
 	}
 	target, err := url.Parse(base + "/chat/completions")
 	if err != nil {
-		return fmt.Errorf("nvidia inference prewarm: parse target url: %w", err)
+		return service.NVIDIAInferencePrewarmRejected, fmt.Errorf("nvidia inference prewarm: parse target url: %w", err)
 	}
 	if target.Scheme != "https" && !isLoopbackHost(target.Hostname()) {
-		return fmt.Errorf("nvidia inference prewarm: insecure base url scheme %q for host %q", target.Scheme, target.Hostname())
+		return service.NVIDIAInferencePrewarmRejected, fmt.Errorf("nvidia inference prewarm: insecure base url scheme %q for host %q", target.Scheme, target.Hostname())
 	}
 
 	// markInFlight=false：预热不占用进行中请求计数；
 	// enforceLimit=false：预热不因缓存上限被拒绝（复用已有条目为主）。
 	entry, err := s.getClientEntry(proxyURL, 0, 0, service.HTTPUpstreamProfileNVIDIA, false, false, target)
 	if err != nil {
-		return fmt.Errorf("nvidia inference prewarm: get client: %w", err)
+		return service.NVIDIAInferencePrewarmRejected, fmt.Errorf("nvidia inference prewarm: get client: %w", err)
 	}
 
 	body, err := json.Marshal(nvidiaInferencePrewarmRequestBody{
@@ -888,11 +892,11 @@ func (s *httpUpstreamService) PrewarmNVIDIAInference(ctx context.Context, proxyU
 		MaxTokens: nvidiaInferencePrewarmMaxTokens,
 	})
 	if err != nil {
-		return fmt.Errorf("nvidia inference prewarm: marshal body: %w", err)
+		return service.NVIDIAInferencePrewarmRejected, fmt.Errorf("nvidia inference prewarm: marshal body: %w", err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("nvidia inference prewarm: build request: %w", err)
+		return service.NVIDIAInferencePrewarmRejected, fmt.Errorf("nvidia inference prewarm: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if apiKey != "" {
@@ -901,11 +905,14 @@ func (s *httpUpstreamService) PrewarmNVIDIAInference(ctx context.Context, proxyU
 
 	resp, err := entry.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("nvidia inference prewarm: transport error: %w", err)
+		return service.NVIDIAInferencePrewarmRejected, fmt.Errorf("nvidia inference prewarm: transport error: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, nvidiaPrewarmBodyDrainLimit))
-	return nil
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+		return service.NVIDIAInferencePrewarmAccepted, nil
+	}
+	return service.NVIDIAInferencePrewarmRejected, nil
 }
 
 // nvidiaStaleSocketProbe sends a HEAD request to NVIDIA /v1/models using the same

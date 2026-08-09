@@ -16,10 +16,12 @@ type NVIDIAInferencePrewarmerSnapshot struct {
 	Rounds int64 `json:"rounds"`
 	// LastRoundAccounts 上一轮参与预热的账号数
 	LastRoundAccounts int `json:"last_round_accounts"`
-	// SucceededTotal 累计预热成功次数
+	// SucceededTotal 累计预热成功次数（HTTP 2xx 可复用）
 	SucceededTotal int64 `json:"succeeded_total"`
 	// FailedTotal 累计预热失败次数（传输层错误）
 	FailedTotal int64 `json:"failed_total"`
+	// RejectedTotal 累计被上游拒绝次数（HTTP 非 2xx 接单，不可复用）
+	RejectedTotal int64 `json:"rejected_total"`
 	// LastRoundAt 上一轮完成时间（零值表示尚未执行过）
 	LastRoundAt time.Time `json:"last_round_at"`
 }
@@ -169,7 +171,7 @@ func (p *NVIDIAInferencePrewarmer) runOnce() {
 		return
 	}
 	if len(accounts) == 0 {
-		p.recordRound(0, 0, 0)
+		p.recordRound(0, 0, 0, 0)
 		return
 	}
 
@@ -178,6 +180,7 @@ func (p *NVIDIAInferencePrewarmer) runOnce() {
 		roundWG   sync.WaitGroup
 		succeeded int64
 		failed    int64
+		rejected  int64
 		countMu   sync.Mutex
 	)
 	for i := range accounts {
@@ -195,21 +198,24 @@ func (p *NVIDIAInferencePrewarmer) runOnce() {
 		go func(account *Account) {
 			defer roundWG.Done()
 			defer func() { <-sem }()
-			err := p.prewarmAccount(ctx, account)
-			p.recordPrewarmResult(account, err)
+			outcome, err := p.prewarmAccount(ctx, account)
+			p.recordPrewarmResult(account, outcome, err)
 			countMu.Lock()
 			defer countMu.Unlock()
-			if err != nil {
+			switch {
+			case err != nil:
 				failed++
-				return
+			case outcome == NVIDIAInferencePrewarmAccepted:
+				succeeded++
+			default:
+				rejected++
 			}
-			succeeded++
 		}(account)
 	}
 	roundWG.Wait()
-	p.recordRound(len(accounts), succeeded, failed)
-	if failed > 0 {
-		log.Printf("[NVIDIAInferencePrewarm] round done: accounts=%d succeeded=%d failed=%d", len(accounts), succeeded, failed)
+	p.recordRound(len(accounts), succeeded, failed, rejected)
+	if failed > 0 || rejected > 0 {
+		log.Printf("[NVIDIAInferencePrewarm] round done: accounts=%d succeeded=%d failed=%d rejected=%d", len(accounts), succeeded, failed, rejected)
 	}
 }
 
@@ -241,7 +247,7 @@ func (p *NVIDIAInferencePrewarmer) collectAccounts(ctx context.Context) ([]Accou
 }
 
 // prewarmAccount 对单个账号发送最小推理请求。
-func (p *NVIDIAInferencePrewarmer) prewarmAccount(ctx context.Context, account *Account) error {
+func (p *NVIDIAInferencePrewarmer) prewarmAccount(ctx context.Context, account *Account) (NVIDIAInferencePrewarmOutcome, error) {
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
@@ -256,14 +262,21 @@ func (p *NVIDIAInferencePrewarmer) prewarmAccount(ctx context.Context, account *
 }
 
 // recordPrewarmResult 将单账号预热结果回写 metrics，用于调度排序加分。
-// repository 的 PrewarmNVIDIAInference 返回值不携带 HTTP 状态码（任何 HTTP
-// 状态均返回 nil），故按保守方案：任何 error 视为传输层失败记 failTotal，
-// 成功（nil error）才写 lastPrewarmAt + successTotal。
-func (p *NVIDIAInferencePrewarmer) recordPrewarmResult(account *Account, err error) {
+// 三态语义（B2）：
+//   - Accepted（HTTP 2xx）→ 写 lastPrewarmAt + successTotal（可复用成功）
+//   - Rejected（HTTP 非 2xx）→ 不记成功也不记 failTotal（接单但不可复用）
+//   - 传输层 error → 仅 failTotal
+func (p *NVIDIAInferencePrewarmer) recordPrewarmResult(account *Account, outcome NVIDIAInferencePrewarmOutcome, err error) {
 	if p == nil || p.metrics == nil || account == nil {
 		return
 	}
-	p.metrics.RecordInferencePrewarm(account.ID, err == nil)
+	if err != nil {
+		p.metrics.RecordInferencePrewarm(account.ID, false)
+		return
+	}
+	if outcome == NVIDIAInferencePrewarmAccepted {
+		p.metrics.RecordInferencePrewarm(account.ID, true)
+	}
 }
 
 // resolveModel 解析预热模型：显式配置优先，否则取账号模型映射第一个目标。
@@ -287,12 +300,13 @@ func (p *NVIDIAInferencePrewarmer) resolveModel(account *Account) string {
 }
 
 // recordRound 更新快照计数。
-func (p *NVIDIAInferencePrewarmer) recordRound(accounts int, succeeded, failed int64) {
+func (p *NVIDIAInferencePrewarmer) recordRound(accounts int, succeeded, failed, rejected int64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.snapshot.Rounds++
 	p.snapshot.LastRoundAccounts = accounts
 	p.snapshot.SucceededTotal += succeeded
 	p.snapshot.FailedTotal += failed
+	p.snapshot.RejectedTotal += rejected
 	p.snapshot.LastRoundAt = time.Now()
 }

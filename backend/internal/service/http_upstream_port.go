@@ -36,6 +36,19 @@ type NVIDIAConnectionPrewarmUpstream interface {
 	PrewarmNVIDIAConnection(ctx context.Context, proxyURL string) error
 }
 
+// NVIDIAInferencePrewarmOutcome 是推理预热请求的结果分级（B2 修复）：
+// 区分「可复用的成功预热」与「被上游拒绝的接单」，供调度权重化正确打分。
+type NVIDIAInferencePrewarmOutcome int
+
+const (
+	// NVIDIAInferencePrewarmAccepted 表示上游以 2xx 接受预热请求（模型已加载，
+	// 可复用成功）。这是唯一计入 lastPrewarmAt + successTotal 的结果。
+	NVIDIAInferencePrewarmAccepted NVIDIAInferencePrewarmOutcome = iota
+	// NVIDIAInferencePrewarmRejected 表示上游返回非 2xx（401/429/5xx）：
+	// 服务已接单但预热不可复用。不记成功、也不累计 failTotal（避免误降权）。
+	NVIDIAInferencePrewarmRejected
+)
+
 // NVIDIAInferencePrewarmUpstream NVIDIA 上游真实推理预热能力接口。
 //
 // 独立于 NVIDIAConnectionPrewarmUpstream 定义（可选能力接口），避免所有
@@ -50,6 +63,7 @@ type NVIDIAInferencePrewarmUpstream interface {
 	// PrewarmNVIDIAInference 对指定代理发送一次 NVIDIA 最小推理请求：
 	// POST {baseURL}/v1/chat/completions，携带 Bearer apiKey 与指定 model，
 	// body 为最小载荷（单条 user 消息 + max_tokens=1）。
-	// 任何 HTTP 状态码（含 401/429）均视为成功，仅传输层错误返回 error。
-	PrewarmNVIDIAInference(ctx context.Context, proxyURL string, baseURL string, apiKey string, model string) error
+	// 返回 Accepted（HTTP 2xx）/ Rejected（HTTP 非 2xx）；仅传输层错误返回
+	// non-nil error（此时 outcome 无意义）。
+	PrewarmNVIDIAInference(ctx context.Context, proxyURL string, baseURL string, apiKey string, model string) (NVIDIAInferencePrewarmOutcome, error)
 }
