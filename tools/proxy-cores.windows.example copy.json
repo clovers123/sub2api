@@ -1,0 +1,39 @@
+{
+  "watch": {
+    "backendPidFile": "tmp\\sub2api-backend.pid",
+    "backendPort": 9004,
+    "intervalSeconds": 2
+  },
+  "cores": [
+    {
+      "name": "mihomo-primary",
+      "enabled": true,
+      "exe": "%USERPROFILE%\\.local\\bin\\mihomo.exe",
+      "args": [
+        "-d",
+        "%USERPROFILE%\\.config\\mihomo-primary",
+        "-f",
+        "%USERPROFILE%\\.config\\mihomo-primary\\config.yaml"
+      ],
+      "workingDirectory": "%USERPROFILE%\\.config\\mihomo-primary",
+      "pidFile": "tmp\\proxy-cores\\mihomo-primary.pid",
+      "stdoutLog": "tmp\\proxy-cores\\mihomo-primary.stdout.log",
+      "stderrLog": "tmp\\proxy-cores\\mihomo-primary.stderr.log"
+    },
+    {
+      "name": "mihomo-second",
+      "enabled": false,
+      "exe": "C:\\tools\\mihomo\\mihomo.exe",
+      "args": [
+        "-d",
+        "C:\\tools\\mihomo\\second",
+        "-f",
+        "C:\\tools\\mihomo\\second\\config.yaml"
+      ],
+      "workingDirectory": "C:\\tools\\mihomo\\second",
+      "pidFile": "tmp\\proxy-cores\\mihomo-second.pid",
+      "stdoutLog": "tmp\\proxy-cores\\mihomo-second.stdout.log",
+      "stderrLog": "tmp\\proxy-cores\\mihomo-second.stderr.log"
+    }
+  ]
+}
