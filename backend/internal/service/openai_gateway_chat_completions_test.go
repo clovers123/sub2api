@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +23,31 @@ type openAIChatFailingWriter struct {
 	gin.ResponseWriter
 	failAfter int
 	writes    int
+}
+
+// chatCompletionsCountingNvidiaCache is intentionally local to the default test
+// build. The similarly-shaped helpers used by unit-tag tests are excluded from
+// ordinary `go test`, so this test must not depend on them.
+type chatCompletionsCountingNvidiaCache struct {
+	mu      sync.Mutex
+	applies int
+}
+
+func (c *chatCompletionsCountingNvidiaCache) Reserve(_ context.Context, _ int64, _ string) (NvidiaCacheReserveResult, error) {
+	return NvidiaCacheReserveResult{Allowed: true}, nil
+}
+
+func (c *chatCompletionsCountingNvidiaCache) Apply(_ context.Context, _ int64, _ string, _ NvidiaThrottleRate) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.applies++
+	return nil
+}
+
+func (c *chatCompletionsCountingNvidiaCache) applyCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.applies
 }
 
 func (w *openAIChatFailingWriter) Write(p []byte) (int, error) {
@@ -1043,7 +1069,7 @@ func TestBuildChatStreamErrorSSE(t *testing.T) {
 	require.Equal(t, "blocked by policy", gjson.Get(payload, "error.message").String())
 }
 
-// TestNVIDIAAdaptiveThrottleSuccess_IgnoresNonNVIDIAAccount B1''-3 回归：
+// TestNVIDIAAdaptiveThrottleSuccess_IgnoresNonNVIDIAAccount B1”-3 回归：
 // 成功路径（ForwardAsChatCompletions 末尾的 200 记录）必须带
 // isNVIDIAAccountByHostname guard：OAuth/非 NVIDIA 账号的成功结果不得写入
 // NVIDIA throttle cache（否则 DecaySpacing 状态被非 NVIDIA 流量污染）。
@@ -1072,8 +1098,8 @@ func TestNVIDIAAdaptiveThrottleSuccess_IgnoresNonNVIDIAAccount(t *testing.T) {
 		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
 	}}
 
-	cache := &countingNvidiaCache{}
-	rateLimitSvc := NewRateLimitService(&rateLimitAccountRepoStub{}, nil, &config.Config{}, nil, nil)
+	cache := &chatCompletionsCountingNvidiaCache{}
+	rateLimitSvc := NewRateLimitService(nil, nil, &config.Config{}, nil, nil)
 	rateLimitSvc.SetNvidiaAdaptiveThrottleCache(cache)
 	svc := &OpenAIGatewayService{httpUpstream: upstream, rateLimitService: rateLimitSvc}
 	account := &Account{
