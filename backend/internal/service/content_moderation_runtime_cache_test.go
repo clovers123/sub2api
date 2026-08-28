@@ -55,8 +55,19 @@ func (r *contentModerationRuntimeSettingRepo) Set(_ context.Context, key, value 
 func (r *contentModerationRuntimeSettingRepo) GetMultiple(_ context.Context, keys []string) (map[string]string, error) {
 	r.mu.Lock()
 	r.getMultipleCalls++
-	if err := r.getMultipleErr; err != nil {
+	start := r.getMultipleStart
+	wait := r.getMultipleWait
+	r.getMultipleStart = nil
+	r.getMultipleWait = nil
+	err := r.getMultipleErr
+	if err != nil {
 		r.mu.Unlock()
+		if start != nil {
+			start <- struct{}{}
+		}
+		if wait != nil {
+			<-wait
+		}
 		return nil, err
 	}
 	out := make(map[string]string, len(keys))
@@ -65,10 +76,6 @@ func (r *contentModerationRuntimeSettingRepo) GetMultiple(_ context.Context, key
 			out[key] = value
 		}
 	}
-	start := r.getMultipleStart
-	wait := r.getMultipleWait
-	r.getMultipleStart = nil
-	r.getMultipleWait = nil
 	r.mu.Unlock()
 	if start != nil {
 		start <- struct{}{}
@@ -265,21 +272,31 @@ func TestContentModerationRuntimeSnapshotRefreshFailureKeepsStaleConfig(t *testi
 		SettingKeyRiskControlEnabled:      "true",
 		SettingKeyContentModerationConfig: runtimeCacheTestConfig(t, "blocked"),
 	}}
-	svc := runtimeCacheTestService(repo, time.Nanosecond)
+	svc := runtimeCacheTestService(repo, time.Minute)
 	input := runtimeCacheTestInput("blocked")
 
 	decision, err := svc.Check(context.Background(), input)
 	require.NoError(t, err)
 	require.True(t, decision.Blocked)
+	current := svc.runtimeSnapshot.Load()
+	require.NotNil(t, current)
+	expired := *current
+	expired.loadedAt = time.Now().Add(-2 * time.Minute)
+	svc.runtimeSnapshot.Store(&expired)
 
 	repo.failMultiple(errors.New("database unavailable"))
+	refreshStarted := make(chan struct{}, 1)
+	repo.blockNextMultiple(refreshStarted, nil)
 	decision, err = svc.Check(context.Background(), input)
 	require.NoError(t, err)
 	require.True(t, decision.Blocked)
-	require.Eventually(t, func() bool {
-		_, calls := repo.calls()
-		return calls >= 2
-	}, time.Second, time.Millisecond)
+	select {
+	case <-refreshStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for stale runtime snapshot refresh")
+	}
+	_, calls := repo.calls()
+	require.GreaterOrEqual(t, calls, 2)
 }
 
 func TestContentModerationRuntimeSnapshotRefreshFailureBacksOff(t *testing.T) {
