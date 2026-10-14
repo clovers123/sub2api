@@ -99,6 +99,10 @@ type Group struct {
 	IsExclusive    bool    `json:"is_exclusive"`
 	Status         string  `json:"status"`
 
+	// I18n 名称与描述的各语言译文。只有管理端输出；用户侧接口经 Localized 把
+	// name/description 换成请求语言的版本后清空本字段。
+	I18n domain.GroupI18n `json:"i18n,omitempty"`
+
 	SubscriptionType          string   `json:"subscription_type"`
 	DailyLimitUSD             *float64 `json:"daily_limit_usd"`
 	WeeklyLimitUSD            *float64 `json:"weekly_limit_usd"`
@@ -189,7 +193,7 @@ type AdminGroup struct {
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
 	DefaultMappedModel          string                                   `json:"default_mapped_model"`
 	MessagesDispatchModelConfig domain.OpenAIMessagesDispatchModelConfig `json:"messages_dispatch_model_config"`
-	ModelsListConfig            domain.GroupModelsListConfig             `json:"models_list_config"`
+	ModelAllowlist              service.GroupModelAllowlist              `json:"model_allowlist"`
 	// 固定账号获取 Codex Model Manifest 配置（仅 openai 平台使用）。
 	CodexModelsManifestConfig domain.GroupCodexModelsManifestConfig `json:"codex_models_manifest_config"`
 
@@ -216,6 +220,7 @@ type Account struct {
 	CredentialsStatus       map[string]bool                `json:"credentials_status,omitempty"`
 	Extra                   map[string]any                 `json:"extra"`
 	OllamaCloudUsage        *service.OllamaCloudUsageState `json:"ollama_cloud_usage,omitempty"`
+	OpenCodeGoUsage         *service.OpenCodeGoUsageState  `json:"opencode_go_usage,omitempty"`
 	ProxyID                 *int64                         `json:"proxy_id"`
 	ProxyFallbackOriginID   *int64                         `json:"proxy_fallback_origin_id"`
 	ProxyFallbackOriginName *string                        `json:"proxy_fallback_origin_name,omitempty"`
@@ -340,6 +345,7 @@ type AccountListItem struct {
 	CredentialsStatus map[string]bool                `json:"credentials_status,omitempty"`
 	Extra             map[string]any                 `json:"extra,omitempty"`
 	OllamaCloudUsage  *service.OllamaCloudUsageState `json:"ollama_cloud_usage,omitempty"`
+	OpenCodeGoUsage   *service.OpenCodeGoUsageState  `json:"opencode_go_usage,omitempty"`
 
 	ProxyID                 *int64     `json:"proxy_id"`
 	ProxyFallbackOriginID   *int64     `json:"proxy_fallback_origin_id"`

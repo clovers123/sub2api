@@ -3,12 +3,15 @@ package service
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"net/url"
 	"strings"
 )
 
 var codexToolCapabilityFields = []string{
+	"service_tiers",
 	"supports_search_tool", "apply_patch_tool_type", "comp_hash", "tool_mode", "use_responses_lite",
+	"multi_agent_reasoning_effort", "multi_agent_version",
 }
 
 func applyCodexToolCapabilities(dst, src map[string]json.RawMessage, overwrite bool) bool {
@@ -18,9 +21,17 @@ func applyCodexToolCapabilities(dst, src map[string]json.RawMessage, overwrite b
 		if len(value) == 0 {
 			continue
 		}
-		// These five Codex fields are nullable booleans or strings, never arbitrary objects.
+		if field == "service_tiers" && bytes.Equal(value, []byte("null")) {
+			value = []byte("[]")
+		}
+		// These Codex fields are nullable booleans or strings, never arbitrary objects.
 		if !bytes.Equal(value, []byte("null")) {
-			if field == "supports_search_tool" || field == "use_responses_lite" {
+			if field == "service_tiers" {
+				var tiers []configuredCodexServiceTier
+				if json.Unmarshal(value, &tiers) != nil {
+					continue
+				}
+			} else if field == "supports_search_tool" || field == "use_responses_lite" {
 				if !bytes.Equal(value, []byte("true")) && !bytes.Equal(value, []byte("false")) {
 					continue
 				}
@@ -62,7 +73,7 @@ func accountCodexToolCapabilities(account *Account, modelID string) map[string]j
 	parsed, err := url.Parse(baseURL)
 	official := err == nil && (strings.EqualFold(parsed.Hostname(), "api.openai.com") ||
 		(account.IsOpenAIOAuth() && strings.EqualFold(parsed.Hostname(), "chatgpt.com")))
-	if account.IsOpenAI() && isOpenAIGPT6AstraModel(modelID) && official {
+	if account.IsOpenAI() && (isOpenAIGPT6AstraModel(modelID) || openai.IsGPT61SolModelSpelling(modelID)) && official {
 		defaults := map[string]json.RawMessage{
 			"supports_search_tool":  json.RawMessage("true"),
 			"apply_patch_tool_type": json.RawMessage(`"freeform"`),
@@ -86,13 +97,37 @@ func accountCodexToolCapabilities(account *Account, modelID string) map[string]j
 			capabilities["use_responses_lite"] = json.RawMessage("false")
 		}
 	}
+	// API Astra publicly supports Ultrafast. OAuth must advertise it in its
+	// account manifest; a subscription label alone does not grant the capability.
+	if account.IsOpenAIApiKey() && isOfficialOpenAIModelsBaseURL(baseURL) && isOpenAIGPT6AstraModel(modelID) {
+		tiers := configuredCodexServiceTiersForModel(modelID)
+		tiers = append(tiers, configuredCodexServiceTier{ID: OpenAIFastTierUltrafast, Name: "Ultrafast", Description: "Lowest latency; 6x Standard token pricing."})
+		encoded, err := json.Marshal(tiers)
+		if err != nil {
+			panic(err)
+		}
+		applyCodexToolCapabilities(capabilities, map[string]json.RawMessage{"service_tiers": encoded}, false)
+	}
 	return capabilities
+}
+
+// codexModelRoutingAccountIDs 返回分组显式为该公开别名声明的账号集合。
+//
+// 返回非空表示运营者已经用 model_routing 指明“这个别名由这些账号服务”，此时别名的
+// 归属不再是需要推断的未知量：能力声明只看这些账号，且不再因为它们映射到不同上游而
+// 判定为冲突。返回空表示没有相关规则，保持原有的全量推断与失败即关闭行为。
+func codexModelRoutingAccountIDs(group *Group, modelID string) []int64 {
+	if group == nil {
+		return nil
+	}
+	return group.GetRoutingAccountIDs(strings.TrimSpace(modelID))
 }
 
 func groupCodexModelMetadata(
 	platform string,
 	modelID string,
 	accounts []Account,
+	group *Group,
 	compositeRoutes []CompositeModelRoute,
 	compositeRoutesAvailable bool,
 ) (codexModelMetadataOverride, bool) {
@@ -100,6 +135,9 @@ func groupCodexModelMetadata(
 	if modelID == "" {
 		return codexModelMetadataOverride{}, false
 	}
+	// 显式路由规则本身与平台无关，先取出来供后续两处判定共用。
+	routedAccountIDs := codexModelRoutingAccountIDs(group, modelID)
+	routed := len(routedAccountIDs) > 0
 	upstreamModel := modelID
 	if platform == PlatformComposite {
 		var resolved bool
@@ -110,7 +148,7 @@ func groupCodexModelMetadata(
 			compositeRoutesAvailable,
 		)
 		if !resolved {
-			if codexExplicitModelTargetsConflict(accounts, modelID) {
+			if !routed && codexExplicitModelTargetsConflict(accounts, modelID) {
 				return codexModelMetadataOverride{
 					reasoningConflict:       true,
 					inputModalitiesConflict: true,
@@ -125,20 +163,30 @@ func groupCodexModelMetadata(
 
 	explicitClaims := false
 	if upstreamModel == modelID {
-		for _, account := range accounts {
-			if account.Platform == platform && codexExplicitModelMappingClaims(account, modelID) {
+		for i := range accounts {
+			account := &accounts[i]
+			if routed && !containsInt64(routedAccountIDs, account.ID) {
+				continue
+			}
+			if account.Platform == platform && codexExplicitModelMappingClaims(*account, modelID) {
 				explicitClaims = true
 				break
 			}
 		}
 	}
-	explicitTargetsConflict := explicitClaims && codexExplicitModelTargetsConflictForPlatform(accounts, platform, modelID)
+	// 别名已被显式路由声明时，"多个账号映射到不同上游"是故障转移的正常写法，不是歧义，
+	// 因此不再失败即关闭；能力回落到与单账号无快照时相同的按名推导。
+	explicitTargetsConflict := explicitClaims && !routed &&
+		codexExplicitModelTargetsConflictForPlatform(accounts, platform, modelID)
 	publicAlias := upstreamModel != modelID
 	candidates := make([]UpstreamModelMetadata, 0)
 	missingMetadata := false
 	for i := range accounts {
 		account := &accounts[i]
 		if account.Platform != platform {
+			continue
+		}
+		if routed && !containsInt64(routedAccountIDs, account.ID) {
 			continue
 		}
 		var lookupModel string
@@ -233,8 +281,11 @@ func intersectUpstreamModelMetadata(modelID string, candidates []UpstreamModelMe
 			result.CodexToolCapabilities[field] = value
 		} else if declared {
 			fallback := json.RawMessage("null")
-			if field == "supports_search_tool" || field == "use_responses_lite" {
+			switch field {
+			case "supports_search_tool", "use_responses_lite":
 				fallback = json.RawMessage("false")
+			case "service_tiers":
+				fallback = json.RawMessage("[]")
 			}
 			result.CodexToolCapabilities[field] = fallback
 		}
@@ -323,6 +374,21 @@ func intersectUpstreamModelMetadata(modelID string, candidates []UpstreamModelMe
 	if !contextKnown {
 		result.ContextWindow = 0
 	}
+	for i, candidate := range candidates {
+		maxContextWindow := candidate.MaxContextWindow
+		if maxContextWindow <= 0 {
+			// Older snapshots only stored the default window. Keep that bound
+			// until a sync supplies the upstream's explicit maximum.
+			maxContextWindow = candidate.ContextWindow
+		}
+		if maxContextWindow <= 0 {
+			result.MaxContextWindow = 0
+			break
+		}
+		if i == 0 || maxContextWindow < result.MaxContextWindow {
+			result.MaxContextWindow = maxContextWindow
+		}
+	}
 	return result
 }
 
@@ -378,6 +444,10 @@ func applyUpstreamModelMetadataToCodexDescriptor(
 		descriptor.ContextWindow = metadata.ContextWindow
 		descriptor.MaxContextWindow = metadata.ContextWindow
 	}
+	if metadata.MaxContextWindow > 0 {
+		descriptor.MaxContextWindow = metadata.MaxContextWindow
+		descriptor.ContextWindow = min(descriptor.ContextWindow, metadata.MaxContextWindow)
+	}
 }
 
 func configuredCodexReasoningLevelDescription(level string) string {
@@ -396,6 +466,8 @@ func configuredCodexReasoningLevelDescription(level string) string {
 		return "Extra-high reasoning depth for difficult tasks"
 	case "max":
 		return "Maximum reasoning depth for complex tasks"
+	case "ultra":
+		return "Maximum reasoning with automatic task delegation"
 	default:
 		return "Reasoning effort supported by the upstream model"
 	}

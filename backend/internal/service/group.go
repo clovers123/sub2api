@@ -12,7 +12,6 @@ import (
 )
 
 type OpenAIMessagesDispatchModelConfig = domain.OpenAIMessagesDispatchModelConfig
-type GroupModelsListConfig = domain.GroupModelsListConfig
 type GroupCodexModelsManifestConfig = domain.GroupCodexModelsManifestConfig
 type ReasoningEffortMapping = domain.ReasoningEffortMapping
 
@@ -20,6 +19,7 @@ type Group struct {
 	ID             int64
 	Name           string
 	Description    string
+	I18n           GroupI18n // 名称与描述的界面语言译文；缺失的语言沿用 Name/Description
 	Platform       string
 	RateMultiplier float64
 	// 高峰时段倍率：peak_rate_enabled 为 true 且当前时刻处于 [PeakStart, PeakEnd) 时，
@@ -107,8 +107,8 @@ type Group struct {
 	RequirePrivacySet           bool // 调度时仅允许 privacy 已成功设置的账号（OpenAI/Antigravity/Anthropic/Gemini）
 	DefaultMappedModel          string
 	MessagesDispatchModelConfig OpenAIMessagesDispatchModelConfig
-	ModelsListConfig            GroupModelsListConfig
-	// CodexModelsManifestConfig 开启后，该分组的 Codex /models manifest 请求只用
+	ModelAllowlist              GroupModelAllowlist
+	// CodexModelsManifestConfig 开启后，普通模型列表与 Codex manifest 优先使用
 	// 固定账号列表拉取并合并，不经过调度器（仅 openai 平台）。
 	CodexModelsManifestConfig GroupCodexModelsManifestConfig
 
@@ -140,6 +140,12 @@ type Group struct {
 	AccountCount            int64
 	ActiveAccountCount      int64
 	RateLimitedAccountCount int64
+}
+
+// IsGroupBindableInSimpleMode is the shared policy for groups that may be
+// surfaced and bound to accounts while running in simple mode.
+func IsGroupBindableInSimpleMode(group *Group) bool {
+	return group != nil && group.Platform != PlatformComposite
 }
 
 func (g *Group) IsActive() bool {

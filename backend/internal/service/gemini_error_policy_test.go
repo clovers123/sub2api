@@ -606,6 +606,143 @@ func TestHandleGeminiUpstreamError_PoolMode429(t *testing.T) {
 	}
 }
 
+// Vertex（service_account）429 响应带 google.rpc.RetryInfo 时，应按 retryDelay 冷却，
+// 而不是回退到 PST 午夜。
+func TestHandleGeminiUpstreamError_VertexRetryInfoUsesParsedDelay(t *testing.T) {
+	repo := &rateLimit429AccountRepoStub{}
+	svc := &GeminiMessagesCompatService{accountRepo: repo}
+
+	account := &Account{
+		ID:       601,
+		Platform: PlatformGemini,
+		Type:     AccountTypeServiceAccount,
+		Credentials: map[string]any{
+			"project_id": "my-vertex-project",
+			"location":   "global",
+		},
+	}
+	body := []byte(`{"error":{"code":429,"message":"Resource exhausted. Please try again later.","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"39s"}]}}`)
+
+	before := time.Now()
+	svc.handleGeminiUpstreamError(context.Background(), account, http.StatusTooManyRequests, http.Header{}, body)
+
+	require.Equal(t, 1, repo.rateLimitCalls)
+	require.Equal(t, int64(601), repo.lastRateLimitID)
+	require.WithinDuration(t, before.Add(39*time.Second), repo.lastRateLimitReset, 2*time.Second)
+}
+
+// Vertex（service_account）429 响应不带任何可解析的重置时间时，走短冷却兜底，
+// 不再冷却到 PST 午夜（按量付费没有每日配额，长冷却会导致整组不可用）。
+func TestHandleGeminiUpstreamError_VertexFallbackUsesShortCooldown(t *testing.T) {
+	repo := &rateLimit429AccountRepoStub{}
+	svc := &GeminiMessagesCompatService{accountRepo: repo}
+
+	account := &Account{
+		ID:       602,
+		Platform: PlatformGemini,
+		Type:     AccountTypeServiceAccount,
+		Credentials: map[string]any{
+			"project_id": "my-vertex-project",
+		},
+	}
+	body := []byte(`{"error":{"code":429,"message":"Resource exhausted. Please try again later.","status":"RESOURCE_EXHAUSTED"}}`)
+
+	before := time.Now()
+	svc.handleGeminiUpstreamError(context.Background(), account, http.StatusTooManyRequests, http.Header{}, body)
+
+	require.Equal(t, 1, repo.rateLimitCalls)
+	require.Equal(t, int64(602), repo.lastRateLimitID)
+	require.WithinDuration(t, before.Add(geminiVertexFallbackCooldown), repo.lastRateLimitReset, 2*time.Second)
+	// 显式守护：不应被冷却超过 15 分钟（更不应到次日 PST 午夜）
+	require.True(t, repo.lastRateLimitReset.Before(before.Add(15*time.Minute)))
+}
+
+// API Key（AI Studio）无法解析重置时间时仍冷却到 PST 午夜，行为保持不变。
+func TestHandleGeminiUpstreamError_APIKeyFallbackStillPSTMidnight(t *testing.T) {
+	repo := &rateLimit429AccountRepoStub{}
+	svc := &GeminiMessagesCompatService{accountRepo: repo}
+
+	account := &Account{
+		ID:       603,
+		Platform: PlatformGemini,
+		Type:     AccountTypeAPIKey,
+	}
+	body := []byte(`{"error":{"code":429,"message":"rate limit"}}`)
+
+	svc.handleGeminiUpstreamError(context.Background(), account, http.StatusTooManyRequests, http.Header{}, body)
+
+	require.Equal(t, 1, repo.rateLimitCalls)
+	require.Equal(t, int64(603), repo.lastRateLimitID)
+	expected := time.Unix(*nextGeminiDailyResetUnix(), 0)
+	require.WithinDuration(t, expected, repo.lastRateLimitReset, 5*time.Second)
+}
+
+// 第三方上游 API Key 的 429 不套用 AI Studio 每日配额语义：只认显式重试时长，
+// 否则走全局 429 兜底冷却（未配置时默认 5 秒）。
+func TestHandleGeminiUpstreamError_ThirdPartyAPIKey429(t *testing.T) {
+	const relayBaseURL = "https://relay.example.com"
+	tests := []struct {
+		name       string
+		baseURL    string
+		body       string
+		expectWait time.Duration
+		pstNight   bool
+	}{
+		{
+			name:       "no_reset_time_uses_global_fallback",
+			baseURL:    relayBaseURL,
+			body:       `{"error":{"code":429,"message":"You have exhausted your capacity on this model. Your quota will reset after 6h53m10s."}}`,
+			expectWait: defaultRateLimit429CooldownSeconds * time.Second,
+		},
+		{
+			name:       "daily_quota_message_not_treated_as_pst_midnight",
+			baseURL:    relayBaseURL,
+			body:       `{"error":{"code":429,"message":"Quota exceeded for metric: generate_content_free_tier_requests, limit: 50 per day"}}`,
+			expectWait: defaultRateLimit429CooldownSeconds * time.Second,
+		},
+		{
+			name:       "explicit_quota_reset_delay_respected",
+			baseURL:    relayBaseURL,
+			body:       `{"error":{"code":429,"message":"rate limit","details":[{"metadata":{"quotaResetDelay":"42s"}}]}}`,
+			expectWait: 42 * time.Second,
+		},
+		{
+			name:     "official_base_url_keeps_pst_midnight",
+			baseURL:  "https://generativelanguage.googleapis.com/",
+			body:     `{"error":{"code":429,"message":"rate limit"}}`,
+			pstNight: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &rateLimit429AccountRepoStub{}
+			svc := &GeminiMessagesCompatService{
+				accountRepo:      repo,
+				rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil),
+			}
+			account := &Account{
+				ID:          700,
+				Platform:    PlatformGemini,
+				Type:        AccountTypeAPIKey,
+				Credentials: map[string]any{"base_url": tt.baseURL},
+			}
+
+			before := time.Now()
+			svc.handleGeminiUpstreamError(context.Background(), account, http.StatusTooManyRequests, http.Header{}, []byte(tt.body))
+
+			require.Equal(t, 1, repo.rateLimitCalls)
+			require.Equal(t, int64(700), repo.lastRateLimitID)
+			if tt.pstNight {
+				expected := time.Unix(*nextGeminiDailyResetUnix(), 0)
+				require.WithinDuration(t, expected, repo.lastRateLimitReset, 5*time.Second)
+				return
+			}
+			require.WithinDuration(t, before.Add(tt.expectWait), repo.lastRateLimitReset, 2*time.Second)
+		})
+	}
+}
+
 type geminiErrorPolicyRepo struct {
 	mockAccountRepoForGemini
 	setErrorCalls            int

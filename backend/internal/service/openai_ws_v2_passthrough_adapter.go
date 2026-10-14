@@ -1054,6 +1054,11 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 						return payload, nil, err
 					}
 				}
+				if hooks != nil && hooks.BeforeTurn != nil {
+					if err := hooks.BeforeTurn(turnNo); err != nil {
+						return payload, nil, err
+					}
+				}
 				if hooks != nil && hooks.MapRequestModel != nil {
 					upstreamModel, err := hooks.MapRequestModel(turnNo, requestModelForThisFrame)
 					if err != nil {
@@ -1202,6 +1207,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					RequestID: turn.RequestID,
 					Usage: OpenAIUsage{
 						InputTokens:              turn.Usage.InputTokens,
+						ImageInputTokens:         turn.Usage.ImageInputTokens,
 						OutputTokens:             turn.Usage.OutputTokens,
 						CacheCreationInputTokens: turn.Usage.CacheCreationInputTokens,
 						CacheReadInputTokens:     turn.Usage.CacheReadInputTokens,
@@ -1299,6 +1305,13 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					truncateOpenAIWSLogValue(errTypeRaw, openAIWSLogValueMaxLen),
 					truncateOpenAIWSLogValue(errMsgRaw, openAIWSLogValueMaxLen),
 				)
+				if completedTurns.Load() > 0 {
+					return NewOpenAIWSClientCloseError(
+						coderws.StatusTryAgainLater,
+						"upstream rate limit exceeded; please reconnect",
+						errors.New("later passthrough turn was rate limited before output"),
+					)
+				}
 				return s.newOpenAIWSRateLimitFailoverError(account, handshakeHeaders, payload, errMsgRaw)
 			},
 			OnTrace: func(event openaiwsv2.RelayTraceEvent) {
@@ -1336,6 +1349,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		RequestID: relayResult.RequestID,
 		Usage: OpenAIUsage{
 			InputTokens:              relayResult.Usage.InputTokens,
+			ImageInputTokens:         relayResult.Usage.ImageInputTokens,
 			OutputTokens:             relayResult.Usage.OutputTokens,
 			CacheCreationInputTokens: relayResult.Usage.CacheCreationInputTokens,
 			CacheReadInputTokens:     relayResult.Usage.CacheReadInputTokens,

@@ -22086,6 +22086,7 @@ type GroupMutation struct {
 	deleted_at                              *time.Time
 	name                                    *string
 	description                             *string
+	i18n                                    *domain.GroupI18n
 	rate_multiplier                         *float64
 	addrate_multiplier                      *float64
 	peak_rate_enabled                       *bool
@@ -22164,7 +22165,7 @@ type GroupMutation struct {
 	require_privacy_set                     *bool
 	default_mapped_model                    *string
 	messages_dispatch_model_config          *domain.OpenAIMessagesDispatchModelConfig
-	models_list_config                      *domain.GroupModelsListConfig
+	model_allowlist                         *domain.GroupModelAllowlist
 	codex_models_manifest_config            *domain.GroupCodexModelsManifestConfig
 	rpm_limit                               *int
 	addrpm_limit                            *int
@@ -22503,6 +22504,42 @@ func (m *GroupMutation) DescriptionCleared() bool {
 func (m *GroupMutation) ResetDescription() {
 	m.description = nil
 	delete(m.clearedFields, group.FieldDescription)
+}
+
+// SetI18n sets the "i18n" field.
+func (m *GroupMutation) SetI18n(di domain.GroupI18n) {
+	m.i18n = &di
+}
+
+// I18n returns the value of the "i18n" field in the mutation.
+func (m *GroupMutation) I18n() (r domain.GroupI18n, exists bool) {
+	v := m.i18n
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldI18n returns the old "i18n" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldI18n(ctx context.Context) (v domain.GroupI18n, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldI18n is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldI18n requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldI18n: %w", err)
+	}
+	return oldValue.I18n, nil
+}
+
+// ResetI18n resets all changes to the "i18n" field.
+func (m *GroupMutation) ResetI18n() {
+	m.i18n = nil
 }
 
 // SetRateMultiplier sets the "rate_multiplier" field.
@@ -25164,40 +25201,40 @@ func (m *GroupMutation) ResetMessagesDispatchModelConfig() {
 	m.messages_dispatch_model_config = nil
 }
 
-// SetModelsListConfig sets the "models_list_config" field.
-func (m *GroupMutation) SetModelsListConfig(dmlc domain.GroupModelsListConfig) {
-	m.models_list_config = &dmlc
+// SetModelAllowlist sets the "model_allowlist" field.
+func (m *GroupMutation) SetModelAllowlist(dma domain.GroupModelAllowlist) {
+	m.model_allowlist = &dma
 }
 
-// ModelsListConfig returns the value of the "models_list_config" field in the mutation.
-func (m *GroupMutation) ModelsListConfig() (r domain.GroupModelsListConfig, exists bool) {
-	v := m.models_list_config
+// ModelAllowlist returns the value of the "model_allowlist" field in the mutation.
+func (m *GroupMutation) ModelAllowlist() (r domain.GroupModelAllowlist, exists bool) {
+	v := m.model_allowlist
 	if v == nil {
 		return
 	}
 	return *v, true
 }
 
-// OldModelsListConfig returns the old "models_list_config" field's value of the Group entity.
+// OldModelAllowlist returns the old "model_allowlist" field's value of the Group entity.
 // If the Group object wasn't provided to the builder, the object is fetched from the database.
 // An error is returned if the mutation operation is not UpdateOne, or the database query fails.
-func (m *GroupMutation) OldModelsListConfig(ctx context.Context) (v domain.GroupModelsListConfig, err error) {
+func (m *GroupMutation) OldModelAllowlist(ctx context.Context) (v domain.GroupModelAllowlist, err error) {
 	if !m.op.Is(OpUpdateOne) {
-		return v, errors.New("OldModelsListConfig is only allowed on UpdateOne operations")
+		return v, errors.New("OldModelAllowlist is only allowed on UpdateOne operations")
 	}
 	if m.id == nil || m.oldValue == nil {
-		return v, errors.New("OldModelsListConfig requires an ID field in the mutation")
+		return v, errors.New("OldModelAllowlist requires an ID field in the mutation")
 	}
 	oldValue, err := m.oldValue(ctx)
 	if err != nil {
-		return v, fmt.Errorf("querying old value for OldModelsListConfig: %w", err)
+		return v, fmt.Errorf("querying old value for OldModelAllowlist: %w", err)
 	}
-	return oldValue.ModelsListConfig, nil
+	return oldValue.ModelAllowlist, nil
 }
 
-// ResetModelsListConfig resets all changes to the "models_list_config" field.
-func (m *GroupMutation) ResetModelsListConfig() {
-	m.models_list_config = nil
+// ResetModelAllowlist resets all changes to the "model_allowlist" field.
+func (m *GroupMutation) ResetModelAllowlist() {
+	m.model_allowlist = nil
 }
 
 // SetCodexModelsManifestConfig sets the "codex_models_manifest_config" field.
@@ -25921,7 +25958,7 @@ func (m *GroupMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *GroupMutation) Fields() []string {
-	fields := make([]string, 0, 66)
+	fields := make([]string, 0, 67)
 	if m.created_at != nil {
 		fields = append(fields, group.FieldCreatedAt)
 	}
@@ -25936,6 +25973,9 @@ func (m *GroupMutation) Fields() []string {
 	}
 	if m.description != nil {
 		fields = append(fields, group.FieldDescription)
+	}
+	if m.i18n != nil {
+		fields = append(fields, group.FieldI18n)
 	}
 	if m.rate_multiplier != nil {
 		fields = append(fields, group.FieldRateMultiplier)
@@ -26093,8 +26133,8 @@ func (m *GroupMutation) Fields() []string {
 	if m.messages_dispatch_model_config != nil {
 		fields = append(fields, group.FieldMessagesDispatchModelConfig)
 	}
-	if m.models_list_config != nil {
-		fields = append(fields, group.FieldModelsListConfig)
+	if m.model_allowlist != nil {
+		fields = append(fields, group.FieldModelAllowlist)
 	}
 	if m.codex_models_manifest_config != nil {
 		fields = append(fields, group.FieldCodexModelsManifestConfig)
@@ -26138,6 +26178,8 @@ func (m *GroupMutation) Field(name string) (ent.Value, bool) {
 		return m.Name()
 	case group.FieldDescription:
 		return m.Description()
+	case group.FieldI18n:
+		return m.I18n()
 	case group.FieldRateMultiplier:
 		return m.RateMultiplier()
 	case group.FieldPeakRateEnabled:
@@ -26242,8 +26284,8 @@ func (m *GroupMutation) Field(name string) (ent.Value, bool) {
 		return m.DefaultMappedModel()
 	case group.FieldMessagesDispatchModelConfig:
 		return m.MessagesDispatchModelConfig()
-	case group.FieldModelsListConfig:
-		return m.ModelsListConfig()
+	case group.FieldModelAllowlist:
+		return m.ModelAllowlist()
 	case group.FieldCodexModelsManifestConfig:
 		return m.CodexModelsManifestConfig()
 	case group.FieldRpmLimit:
@@ -26279,6 +26321,8 @@ func (m *GroupMutation) OldField(ctx context.Context, name string) (ent.Value, e
 		return m.OldName(ctx)
 	case group.FieldDescription:
 		return m.OldDescription(ctx)
+	case group.FieldI18n:
+		return m.OldI18n(ctx)
 	case group.FieldRateMultiplier:
 		return m.OldRateMultiplier(ctx)
 	case group.FieldPeakRateEnabled:
@@ -26383,8 +26427,8 @@ func (m *GroupMutation) OldField(ctx context.Context, name string) (ent.Value, e
 		return m.OldDefaultMappedModel(ctx)
 	case group.FieldMessagesDispatchModelConfig:
 		return m.OldMessagesDispatchModelConfig(ctx)
-	case group.FieldModelsListConfig:
-		return m.OldModelsListConfig(ctx)
+	case group.FieldModelAllowlist:
+		return m.OldModelAllowlist(ctx)
 	case group.FieldCodexModelsManifestConfig:
 		return m.OldCodexModelsManifestConfig(ctx)
 	case group.FieldRpmLimit:
@@ -26444,6 +26488,13 @@ func (m *GroupMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetDescription(v)
+		return nil
+	case group.FieldI18n:
+		v, ok := value.(domain.GroupI18n)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetI18n(v)
 		return nil
 	case group.FieldRateMultiplier:
 		v, ok := value.(float64)
@@ -26809,12 +26860,12 @@ func (m *GroupMutation) SetField(name string, value ent.Value) error {
 		}
 		m.SetMessagesDispatchModelConfig(v)
 		return nil
-	case group.FieldModelsListConfig:
-		v, ok := value.(domain.GroupModelsListConfig)
+	case group.FieldModelAllowlist:
+		v, ok := value.(domain.GroupModelAllowlist)
 		if !ok {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
-		m.SetModelsListConfig(v)
+		m.SetModelAllowlist(v)
 		return nil
 	case group.FieldCodexModelsManifestConfig:
 		v, ok := value.(domain.GroupCodexModelsManifestConfig)
@@ -27398,6 +27449,9 @@ func (m *GroupMutation) ResetField(name string) error {
 	case group.FieldDescription:
 		m.ResetDescription()
 		return nil
+	case group.FieldI18n:
+		m.ResetI18n()
+		return nil
 	case group.FieldRateMultiplier:
 		m.ResetRateMultiplier()
 		return nil
@@ -27554,8 +27608,8 @@ func (m *GroupMutation) ResetField(name string) error {
 	case group.FieldMessagesDispatchModelConfig:
 		m.ResetMessagesDispatchModelConfig()
 		return nil
-	case group.FieldModelsListConfig:
-		m.ResetModelsListConfig()
+	case group.FieldModelAllowlist:
+		m.ResetModelAllowlist()
 		return nil
 	case group.FieldCodexModelsManifestConfig:
 		m.ResetCodexModelsManifestConfig()
@@ -30113,6 +30167,8 @@ type PaymentOrderMutation struct {
 	addpay_amount            *float64
 	fee_rate                 *float64
 	addfee_rate              *float64
+	bonus_amount             *float64
+	addbonus_amount          *float64
 	recharge_code            *string
 	out_trade_no             *string
 	payment_type             *string
@@ -30578,6 +30634,62 @@ func (m *PaymentOrderMutation) AddedFeeRate() (r float64, exists bool) {
 func (m *PaymentOrderMutation) ResetFeeRate() {
 	m.fee_rate = nil
 	m.addfee_rate = nil
+}
+
+// SetBonusAmount sets the "bonus_amount" field.
+func (m *PaymentOrderMutation) SetBonusAmount(f float64) {
+	m.bonus_amount = &f
+	m.addbonus_amount = nil
+}
+
+// BonusAmount returns the value of the "bonus_amount" field in the mutation.
+func (m *PaymentOrderMutation) BonusAmount() (r float64, exists bool) {
+	v := m.bonus_amount
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldBonusAmount returns the old "bonus_amount" field's value of the PaymentOrder entity.
+// If the PaymentOrder object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *PaymentOrderMutation) OldBonusAmount(ctx context.Context) (v float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldBonusAmount is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldBonusAmount requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldBonusAmount: %w", err)
+	}
+	return oldValue.BonusAmount, nil
+}
+
+// AddBonusAmount adds f to the "bonus_amount" field.
+func (m *PaymentOrderMutation) AddBonusAmount(f float64) {
+	if m.addbonus_amount != nil {
+		*m.addbonus_amount += f
+	} else {
+		m.addbonus_amount = &f
+	}
+}
+
+// AddedBonusAmount returns the value that was added to the "bonus_amount" field in this mutation.
+func (m *PaymentOrderMutation) AddedBonusAmount() (r float64, exists bool) {
+	v := m.addbonus_amount
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetBonusAmount resets all changes to the "bonus_amount" field.
+func (m *PaymentOrderMutation) ResetBonusAmount() {
+	m.bonus_amount = nil
+	m.addbonus_amount = nil
 }
 
 // SetRechargeCode sets the "recharge_code" field.
@@ -32123,7 +32235,7 @@ func (m *PaymentOrderMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *PaymentOrderMutation) Fields() []string {
-	fields := make([]string, 0, 39)
+	fields := make([]string, 0, 40)
 	if m.user != nil {
 		fields = append(fields, paymentorder.FieldUserID)
 	}
@@ -32144,6 +32256,9 @@ func (m *PaymentOrderMutation) Fields() []string {
 	}
 	if m.fee_rate != nil {
 		fields = append(fields, paymentorder.FieldFeeRate)
+	}
+	if m.bonus_amount != nil {
+		fields = append(fields, paymentorder.FieldBonusAmount)
 	}
 	if m.recharge_code != nil {
 		fields = append(fields, paymentorder.FieldRechargeCode)
@@ -32263,6 +32378,8 @@ func (m *PaymentOrderMutation) Field(name string) (ent.Value, bool) {
 		return m.PayAmount()
 	case paymentorder.FieldFeeRate:
 		return m.FeeRate()
+	case paymentorder.FieldBonusAmount:
+		return m.BonusAmount()
 	case paymentorder.FieldRechargeCode:
 		return m.RechargeCode()
 	case paymentorder.FieldOutTradeNo:
@@ -32350,6 +32467,8 @@ func (m *PaymentOrderMutation) OldField(ctx context.Context, name string) (ent.V
 		return m.OldPayAmount(ctx)
 	case paymentorder.FieldFeeRate:
 		return m.OldFeeRate(ctx)
+	case paymentorder.FieldBonusAmount:
+		return m.OldBonusAmount(ctx)
 	case paymentorder.FieldRechargeCode:
 		return m.OldRechargeCode(ctx)
 	case paymentorder.FieldOutTradeNo:
@@ -32471,6 +32590,13 @@ func (m *PaymentOrderMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetFeeRate(v)
+		return nil
+	case paymentorder.FieldBonusAmount:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetBonusAmount(v)
 		return nil
 	case paymentorder.FieldRechargeCode:
 		v, ok := value.(string)
@@ -32713,6 +32839,9 @@ func (m *PaymentOrderMutation) AddedFields() []string {
 	if m.addfee_rate != nil {
 		fields = append(fields, paymentorder.FieldFeeRate)
 	}
+	if m.addbonus_amount != nil {
+		fields = append(fields, paymentorder.FieldBonusAmount)
+	}
 	if m.addplan_id != nil {
 		fields = append(fields, paymentorder.FieldPlanID)
 	}
@@ -32739,6 +32868,8 @@ func (m *PaymentOrderMutation) AddedField(name string) (ent.Value, bool) {
 		return m.AddedPayAmount()
 	case paymentorder.FieldFeeRate:
 		return m.AddedFeeRate()
+	case paymentorder.FieldBonusAmount:
+		return m.AddedBonusAmount()
 	case paymentorder.FieldPlanID:
 		return m.AddedPlanID()
 	case paymentorder.FieldSubscriptionGroupID:
@@ -32776,6 +32907,13 @@ func (m *PaymentOrderMutation) AddField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.AddFeeRate(v)
+		return nil
+	case paymentorder.FieldBonusAmount:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddBonusAmount(v)
 		return nil
 	case paymentorder.FieldPlanID:
 		v, ok := value.(int64)
@@ -32975,6 +33113,9 @@ func (m *PaymentOrderMutation) ResetField(name string) error {
 		return nil
 	case paymentorder.FieldFeeRate:
 		m.ResetFeeRate()
+		return nil
+	case paymentorder.FieldBonusAmount:
+		m.ResetBonusAmount()
 		return nil
 	case paymentorder.FieldRechargeCode:
 		m.ResetRechargeCode()
@@ -37366,33 +37507,36 @@ func (m *PromoCodeUsageMutation) ResetEdge(name string) error {
 // ProxyMutation represents an operation that mutates the Proxy nodes in the graph.
 type ProxyMutation struct {
 	config
-	op                  Op
-	typ                 string
-	id                  *int64
-	created_at          *time.Time
-	updated_at          *time.Time
-	deleted_at          *time.Time
-	name                *string
-	protocol            *string
-	host                *string
-	port                *int
-	addport             *int
-	username            *string
-	password            *string
-	status              *string
-	expires_at          *time.Time
-	fallback_mode       *string
-	expiry_warn_days    *int
-	addexpiry_warn_days *int
-	clearedFields       map[string]struct{}
-	accounts            map[int64]struct{}
-	removedaccounts     map[int64]struct{}
-	clearedaccounts     bool
-	backup_proxy        *int64
-	clearedbackup_proxy bool
-	done                bool
-	oldValue            func(context.Context) (*Proxy, error)
-	predicates          []predicate.Proxy
+	op                     Op
+	typ                    string
+	id                     *int64
+	created_at             *time.Time
+	updated_at             *time.Time
+	deleted_at             *time.Time
+	name                   *string
+	protocol               *string
+	host                   *string
+	port                   *int
+	addport                *int
+	username               *string
+	password               *string
+	status                 *string
+	expires_at             *time.Time
+	fallback_mode          *string
+	expiry_warn_days       *int
+	addexpiry_warn_days    *int
+	clearedFields          map[string]struct{}
+	accounts               map[int64]struct{}
+	removedaccounts        map[int64]struct{}
+	clearedaccounts        bool
+	primary_proxies        map[int64]struct{}
+	removedprimary_proxies map[int64]struct{}
+	clearedprimary_proxies bool
+	backup_proxy           *int64
+	clearedbackup_proxy    bool
+	done                   bool
+	oldValue               func(context.Context) (*Proxy, error)
+	predicates             []predicate.Proxy
 }
 
 var _ ent.Mutation = (*ProxyMutation)(nil)
@@ -38156,6 +38300,60 @@ func (m *ProxyMutation) ResetAccounts() {
 	m.removedaccounts = nil
 }
 
+// AddPrimaryProxyIDs adds the "primary_proxies" edge to the Proxy entity by ids.
+func (m *ProxyMutation) AddPrimaryProxyIDs(ids ...int64) {
+	if m.primary_proxies == nil {
+		m.primary_proxies = make(map[int64]struct{})
+	}
+	for i := range ids {
+		m.primary_proxies[ids[i]] = struct{}{}
+	}
+}
+
+// ClearPrimaryProxies clears the "primary_proxies" edge to the Proxy entity.
+func (m *ProxyMutation) ClearPrimaryProxies() {
+	m.clearedprimary_proxies = true
+}
+
+// PrimaryProxiesCleared reports if the "primary_proxies" edge to the Proxy entity was cleared.
+func (m *ProxyMutation) PrimaryProxiesCleared() bool {
+	return m.clearedprimary_proxies
+}
+
+// RemovePrimaryProxyIDs removes the "primary_proxies" edge to the Proxy entity by IDs.
+func (m *ProxyMutation) RemovePrimaryProxyIDs(ids ...int64) {
+	if m.removedprimary_proxies == nil {
+		m.removedprimary_proxies = make(map[int64]struct{})
+	}
+	for i := range ids {
+		delete(m.primary_proxies, ids[i])
+		m.removedprimary_proxies[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedPrimaryProxies returns the removed IDs of the "primary_proxies" edge to the Proxy entity.
+func (m *ProxyMutation) RemovedPrimaryProxiesIDs() (ids []int64) {
+	for id := range m.removedprimary_proxies {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// PrimaryProxiesIDs returns the "primary_proxies" edge IDs in the mutation.
+func (m *ProxyMutation) PrimaryProxiesIDs() (ids []int64) {
+	for id := range m.primary_proxies {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetPrimaryProxies resets all changes to the "primary_proxies" edge.
+func (m *ProxyMutation) ResetPrimaryProxies() {
+	m.primary_proxies = nil
+	m.clearedprimary_proxies = false
+	m.removedprimary_proxies = nil
+}
+
 // ClearBackupProxy clears the "backup_proxy" edge to the Proxy entity.
 func (m *ProxyMutation) ClearBackupProxy() {
 	m.clearedbackup_proxy = true
@@ -38597,9 +38795,12 @@ func (m *ProxyMutation) ResetField(name string) error {
 
 // AddedEdges returns all edge names that were set/added in this mutation.
 func (m *ProxyMutation) AddedEdges() []string {
-	edges := make([]string, 0, 2)
+	edges := make([]string, 0, 3)
 	if m.accounts != nil {
 		edges = append(edges, proxy.EdgeAccounts)
+	}
+	if m.primary_proxies != nil {
+		edges = append(edges, proxy.EdgePrimaryProxies)
 	}
 	if m.backup_proxy != nil {
 		edges = append(edges, proxy.EdgeBackupProxy)
@@ -38617,6 +38818,12 @@ func (m *ProxyMutation) AddedIDs(name string) []ent.Value {
 			ids = append(ids, id)
 		}
 		return ids
+	case proxy.EdgePrimaryProxies:
+		ids := make([]ent.Value, 0, len(m.primary_proxies))
+		for id := range m.primary_proxies {
+			ids = append(ids, id)
+		}
+		return ids
 	case proxy.EdgeBackupProxy:
 		if id := m.backup_proxy; id != nil {
 			return []ent.Value{*id}
@@ -38627,9 +38834,12 @@ func (m *ProxyMutation) AddedIDs(name string) []ent.Value {
 
 // RemovedEdges returns all edge names that were removed in this mutation.
 func (m *ProxyMutation) RemovedEdges() []string {
-	edges := make([]string, 0, 2)
+	edges := make([]string, 0, 3)
 	if m.removedaccounts != nil {
 		edges = append(edges, proxy.EdgeAccounts)
+	}
+	if m.removedprimary_proxies != nil {
+		edges = append(edges, proxy.EdgePrimaryProxies)
 	}
 	return edges
 }
@@ -38644,15 +38854,24 @@ func (m *ProxyMutation) RemovedIDs(name string) []ent.Value {
 			ids = append(ids, id)
 		}
 		return ids
+	case proxy.EdgePrimaryProxies:
+		ids := make([]ent.Value, 0, len(m.removedprimary_proxies))
+		for id := range m.removedprimary_proxies {
+			ids = append(ids, id)
+		}
+		return ids
 	}
 	return nil
 }
 
 // ClearedEdges returns all edge names that were cleared in this mutation.
 func (m *ProxyMutation) ClearedEdges() []string {
-	edges := make([]string, 0, 2)
+	edges := make([]string, 0, 3)
 	if m.clearedaccounts {
 		edges = append(edges, proxy.EdgeAccounts)
+	}
+	if m.clearedprimary_proxies {
+		edges = append(edges, proxy.EdgePrimaryProxies)
 	}
 	if m.clearedbackup_proxy {
 		edges = append(edges, proxy.EdgeBackupProxy)
@@ -38666,6 +38885,8 @@ func (m *ProxyMutation) EdgeCleared(name string) bool {
 	switch name {
 	case proxy.EdgeAccounts:
 		return m.clearedaccounts
+	case proxy.EdgePrimaryProxies:
+		return m.clearedprimary_proxies
 	case proxy.EdgeBackupProxy:
 		return m.clearedbackup_proxy
 	}
@@ -38689,6 +38910,9 @@ func (m *ProxyMutation) ResetEdge(name string) error {
 	switch name {
 	case proxy.EdgeAccounts:
 		m.ResetAccounts()
+		return nil
+	case proxy.EdgePrimaryProxies:
+		m.ResetPrimaryProxies()
 		return nil
 	case proxy.EdgeBackupProxy:
 		m.ResetBackupProxy()
